@@ -1,0 +1,27 @@
+原文件 migrations/0010_asset_profiles.sql，第 1–25 行：
+
+    1: -- Watcher V0.6.6：为同一 DL 中的下载任务记录资产策略。
+    2: -- FULL_MEDIA：TXT、meta、封面与内嵌图；TEXT_META_ONLY：仅 TXT 与 meta。
+    3: -- 旧任务默认回填 FULL_MEDIA，不改变既有分片与 Incoming 内容。
+    4: 
+    5: ALTER TABLE download_jobs ADD COLUMN asset_profile TEXT NOT NULL DEFAULT 'FULL_MEDIA'
+    6:     CHECK (asset_profile IN ('FULL_MEDIA', 'TEXT_META_ONLY'));
+    7: 
+    8: ALTER TABLE novel_versions ADD COLUMN asset_profile TEXT NOT NULL DEFAULT 'FULL_MEDIA'
+    9:     CHECK (asset_profile IN ('FULL_MEDIA', 'TEXT_META_ONLY'));
+   10: ALTER TABLE novel_versions ADD COLUMN text_content_sha256 TEXT;
+   11: 
+   12: ALTER TABLE intake_packages ADD COLUMN asset_profile TEXT NOT NULL DEFAULT 'FULL_MEDIA'
+   13:     CHECK (asset_profile IN ('FULL_MEDIA', 'TEXT_META_ONLY'));
+   14: ALTER TABLE intake_packages ADD COLUMN text_content_sha256 TEXT;
+   15: 
+   16: CREATE TABLE asset_profile_changes (
+   17:     change_id TEXT PRIMARY KEY,
+   18:     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+   19:     from_batch_no INTEGER NOT NULL CHECK (from_batch_no >= 1),
+   20:     asset_profile TEXT NOT NULL CHECK (asset_profile IN ('FULL_MEDIA', 'TEXT_META_ONLY')),
+   21:     only_uningested INTEGER NOT NULL DEFAULT 1 CHECK (only_uningested IN (0, 1)),
+   22:     affected_job_count INTEGER NOT NULL CHECK (affected_job_count >= 0),
+   23:     previous_profile_counts_json TEXT,
+   24:     note TEXT,
+   25:     created_at TEXT NOT NULL

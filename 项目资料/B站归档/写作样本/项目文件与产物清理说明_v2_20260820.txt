@@ -1,0 +1,864 @@
+B站项目文件与产物清理说明
+========================
+
+适用代码基线：
+- bili_watcher.py 0.3.8-access-refresh-optin
+- bili_archive.py 0.10.2-early-interrupt-recovery
+- bili_export.py 0.3.2-creator-name-history
+- bili_cleanup.py 0.2.1-report-archiving
+
+用途：回答“这个文件/目录是谁生成的、有什么作用、谁还会依赖、能不能重建、什么时候可以删、最终由谁清理”。
+
+这份文档不是 Cleanup 命令指南。真正执行删除时仍使用《bili_cleanup.py 脚本使用指南》和《B站视频批量删除流程》。
+
+
+一、先按生命周期理解项目文件
+==========================
+
+项目里的文件大致分成五类：
+
+【A. 长期权威账本】
+
+例如：
+- watcher.db；
+- archive.db；
+- 作者 UID/主页 URL 身份文件。
+
+这类文件保存无法仅靠当前本地媒体完整还原的历史状态，不应当作缓存删除。
+
+【B. 正式业务数据】
+
+例如：
+- Watcher 已整理到正式目录的投稿媒体；
+- Export 从 Telegram 恢复出来的媒体。
+
+是否删除取决于业务是否已经完成，而不是看文件是否“旧”。
+
+【C. 活跃工作区】
+
+例如：
+- Watcher incoming\BVID\current；
+- 活动 Archive plan；
+- Export `.part`。
+
+这些文件可能直接用于续传、resume、repair。任务未结束时不能删。
+
+【D. 可重建缓存/临时产物】
+
+例如：
+- media_validation_cache；
+- Archive temp；
+- __pycache__；
+- 已失效 failed_attempts。
+
+任务不再依赖后可以删除，代价通常只是下次重新计算/重新下载某一步。
+
+【E. 审计和历史记录】
+
+例如：
+- scan report；
+- download log；
+- cleanup manifest/result；
+- migration report；
+- database backup。
+
+这类不能全部无限堆积，也不应该全部一刀切删除。当前 Cleanup 按不同类别做“保留最近若干份”或“长期封存”。
+
+
+二、Watcher：长期账本和作者身份文件
+================================
+
+### 1. watcher.db
+
+位置通常为：
+
+D:\Program files\Telethon\bili_archive\data\watcher.db
+
+生成/维护者：
+
+bili_watcher.py
+
+保存内容包括：
+
+- 作者 UID；
+- 当前作者名及别名；
+- scan 基线；
+- BVID / 投稿记录；
+- 访问类型；
+- 下载任务状态；
+- 失败、人工补救、SKIPPED 等状态。
+
+谁依赖：
+
+- Watcher 自己的后续 scan/download/status；
+- Cleanup 对 Watcher temp 生命周期的判断；
+- Export 的作者曾用名、发布时间、简介等可选元数据增强。
+
+能否重建：
+
+不能把“重新 init-db/重新 scan”理解成完整恢复。
+
+重新建立空库无法自动恢复旧任务状态、历史别名和原基线关系。
+
+处理：
+
+永久保留正式数据库；需要恢复优先使用 backups\db 中快照。
+
+
+### 2. 作者主页 URL TXT
+
+位置：
+
+F:\新建文件夹\b站视频\<UP主>\*.txt
+
+当前项目中通常保存：
+
+https://space.bilibili.com/<UID>
+
+用途：
+
+- 人工确认作者主页；
+- 历史无 source.json 投稿的作者 UID 辅助识别；
+- 作者改名/目录归并时提供稳定身份。
+
+能否重建：
+
+理论上如果 watcher.db 完整可以重新生成或人工补，但没有必要依赖这种恢复方式。
+
+处理：
+
+长期保留。Cleanup 不跟随投稿目录一起删除 UP 主根目录和主页 URL。
+
+
+### 3. 作者名单.txt
+
+位置通常：
+
+F:\新建文件夹\b站视频\作者名单.txt
+
+生成者：Watcher。
+
+用途：给人查看当前作者列表。
+
+能否重建：可以。
+
+处理：文件很小，当前默认保留，不需要为了清空间删除。
+
+
+### 4. 历史上传记录.txt
+
+位置：作者根目录。
+
+用途：给人查看历史扫描/整理摘要。
+
+能否重建：后续成功 scan 可以重新生成相关视图，但重建结果以当前数据库为准，不保证逐字恢复旧文本。
+
+处理：默认保留。它不是 Archive 的 Telegram 权威账本，删除也不会让 Telegram 上传事实消失，但没有必要自动清。
+
+
+三、Watcher：正式投稿目录
+======================
+
+位置：
+
+F:\新建文件夹\b站视频\<UP主>\<投稿标题>\
+
+常见内容：
+
+- 主视频 MP4；
+- Cover.jpg；
+- raw_001.jpg / screenshot；
+- source.json；
+- info.json；
+- 其他整理后的媒体/元数据。
+
+生成者：Watcher download / DownKyi 导入 / 修复流程。
+
+作用：Archive scan/run 的正式输入源。
+
+谁依赖：
+
+- Archive scan；
+- 活动 batch 的 run/resume/repair；
+- 人工重新上传/检查。
+
+【什么时候绝对不能删】
+
+- Archive 尚未上传；
+- run 尚未完成；
+- batch 尚未 VERIFIED；
+- Archive item 是 SKIPPED；
+- 当前状态是 COMPLETED_UNVERIFIED / VERIFY_REQUIRED / FAILED / RESUME_READY；
+- 活动 batch 仍可能需要读取原媒体。
+
+【什么时候进入当前自动删除安全链】
+
+当前 Cleanup 要求：
+
+video_item.upload_status = COMPLETED
++
+对应 upload_batch_member.member_status = VERIFIED
+
+然后 audit 建立候选，clean apply 前还会重新验证。
+
+能否重建：
+
+不能依赖本项目本身重建。删除后若 Telegram 仍有归档，可以再通过 bili_export.py 导回；若 B站源也仍存在，也可重新下载，但二者都不是 Cleanup 的自动恢复机制。
+
+处理：达到安全边界后由 Cleanup 删除；UP 主根目录和身份文件继续保留。
+
+
+### source.json
+
+作用：记录 BVID 等正式源身份，Cleanup 对当前标准投稿优先通过它映射 archive.db item；clean revalidation 还会比较它的 SHA-256 guard。
+
+活跃时：不要为了“让 Cleanup 更容易匹配”手工改写/删除。
+
+最终处理：随已经安全删除的投稿目录一起删除。
+
+
+### info.json
+
+作用：保存下载源的详细元数据，主要用于人工追查和本地整理。
+
+Archive/Cleanup 的长期上传事实不以它为权威。
+
+最终处理：随投稿目录一起删除；没有必要把每个 info.json 单独长期保留。
+
+
+四、Watcher：临时下载工作区
+========================
+
+位置由 watcher_config.json 的 incoming_dir 决定，例如：
+
+F:\新建文件夹\b站视频-temp\<BVID>\
+
+
+### 1. current
+
+用途：当前下载、续传、合并、验证或 DownKyi 补救的工作目录。
+
+当前 Cleanup 的生命周期判断：
+
+PENDING / FAILED / MANUAL_FALLBACK_PENDING
+→ current 仍可能继续使用，保留。
+
+STAGED / IMPORTED_DOWNKYI / SKIPPED / ACCESS_RESTRICTED / SOURCE_UNAVAILABLE
+→ 任务已经终态，整个 BVID 临时目录可进入清理候选。
+
+这里的 Watcher SKIPPED 表示“下载任务明确不再自动继续”，与 Archive SKIPPED 是不同状态机；不能据此推出正式投稿也可以删除。
+
+
+### 2. `.part` / `.aria2` / 分片音视频 / 混流中间文件
+
+作用：下载器续传或最终混流前的中间产物。
+
+活跃任务：不能手工清。
+
+终态任务：跟随整个 incoming BVID 目录清理。
+
+
+### 3. failed_attempts
+
+作用：保存已经判定不能继续作为可信续传来源的失败尝试。
+
+谁依赖：通常只用于故障追查，不再用于正式续传。
+
+处理：即使 current 仍需保留，failed_attempts 本身也可由 Cleanup 清理。
+
+如果正在分析某次下载损坏原因，需要先人工复制想保留的故障样本。
+
+
+五、Watcher：隔离和修复残留
+========================
+
+### 1. watcher quarantine
+
+位置通常：
+
+F:\新建文件夹\b站视频-watcher-quarantine\
+
+用途：Watcher 把判定为异常、不再作为可信正式源的旧目录隔离出来，避免继续被正常 scan/archive 使用。
+
+处理：Cleanup 可处理隔离子项。
+
+但如果某次故障仍在调查中，先把需要长期研究的原件移到自动清理范围之外。
+
+
+### 2. _watcher_rejected_originals
+
+位置：可能在作者目录内部。
+
+用途：自动修复后保留被拒绝的原媒体诊断副本。
+
+处理：当前 Cleanup 可清；需要查损坏原因时先人工保留。
+
+
+### 3. `*.__watcher_repair__.log`
+### 4. `*.__watcher_remux__.mp4`
+### 5. `*.__watcher_transcoded__.mp4`
+
+用途：repair/remux/transcode 中间产物。
+
+最终正式文件已经生成并验证后，这些不再属于业务数据。
+
+处理：Cleanup 可清。
+
+
+### 6. creator_reconcile_staging_*
+
+用途：作者改名/目录合并时的临时 staging。
+
+正常 reconcile 完成后：可清。
+
+如果 reconcile 异常中断：先确认旧目录/新目录和 watcher.db 当前状态，再清 staging；不要把“staging”三个字等同于永远安全删除。
+
+
+六、Watcher：报告和日志
+====================
+
+报告目录通常：
+
+D:\Program files\Telethon\bili_archive\reports\watcher\
+
+
+### 1. scan_report_*.txt
+
+用途：人可读 scan 摘要。
+
+处理：日常报告，Cleanup 按文件家族默认保留最近 3 份。
+
+
+### 2. scan_result_*.json
+
+用途：结构化 scan 结果。
+
+历史说明：旧版 Cleanup 曾通过 scan_result + source.json 固定正式视频删除范围；当前 0.2.1 已不再把它当正式投稿删除安全边界。
+
+处理：日常报告，默认按家族保留最近 3 份。
+
+
+### 3. yt-dlp_batch_*.txt
+
+用途：某轮 scan 生成的下载队列/人工参考。
+
+处理：日常报告，默认最近 3 份。
+
+
+### 4. download_logs\
+
+用途：逐 BVID 下载过程诊断。
+
+当前不是简单“整个目录最近 3 份”：
+
+- 活跃 PENDING / FAILED / MANUAL_FALLBACK_PENDING 任务：每个 BVID 最多保留最近 2 份日志；
+- 终态任务：旧下载日志可清；
+- 无法从文件名识别 BVID 的日志：按最近 3 份保留。
+
+
+### 5. download_failures_*.txt
+### 6. downkyi_import_*.json
+### 7. media_audit_*.json/.txt
+### 8. media_repair_*.json
+### 9. fix_import_names_*.json
+
+用途：专项下载、导入、媒体修复审计。
+
+处理：属于日常/维护报告；默认由 Cleanup 根据当前识别规则裁剪。正在排查具体事故时，可以先人工保存关键报告副本。
+
+
+七、Archive：长期权威账本
+======================
+
+### 1. archive.db
+
+位置：
+
+D:\Program files\Telethon\bili_archive\data\archive.db
+
+生成/维护者：bili_archive.py。
+
+保存内容包括：
+
+- creator / UID / 当前名和名称历史；
+- target / topic；
+- video item / BVID source_ref；
+- Telegram message_id；
+- run；
+- upload batch / member；
+- verify；
+- ZIP package；
+- General 导航状态等。
+
+谁依赖：
+
+- Archive 后续 run/resume/verify/repair；
+- Cleanup 正式投稿安全删除判断；
+- Export 多 target 定位、item/BVID/作者/catalog 查询。
+
+能否重建：
+
+不能通过 `init-db` 建空库恢复历史。
+
+数据库丢失时优先：
+
+backups\db
+→ restore-db
+→ status / target-list / batch-status
+→ 必要时重新 verify 历史 run
+
+处理：永久保留。
+
+
+八、Archive：plan 生命周期
+=======================
+
+位置：
+
+D:\Program files\Telethon\bili_archive\plans\plan_*.json
+
+生成者：archive scan。
+
+作用：冻结某次扫描得到的上传输入、作者集合、排序、路由和文件事实。
+
+谁依赖：
+
+- run；
+- resume-batch；
+- repair/恢复链；
+- batch 中保存的 plan_path / fingerprint。
+
+【非 VERIFIED batch 正在引用】
+
+必须保留。Cleanup 会列为 active_batch_plan/manual_review，不自动删。
+
+【只被 VERIFIED batch 引用】
+
+已完成历史 plan 可清。
+
+【未被任何 batch 引用】
+
+当前默认保留最近 3 份，其余可清。
+
+独立 pilot 不建立正常 batch member 链，因此仅被独立 pilot 使用、没有 batch 引用的 plan 不会得到“活动 batch plan”同级保护；如果 pilot 仍需长期复盘，应主动保留相应 plan。
+
+能否重建：可以重新 scan 生成新 plan，但新 plan 不是旧活动 batch 的原 plan，不能拿“能重新 scan”作为删除活动 plan 的理由。
+
+
+九、Archive：媒体验证缓存和 temp
+==============================
+
+### 1. cache\media_validation_cache.sqlite3
+
+用途：缓存本地媒体验证结果，避免每次 scan 对未变化文件重复执行昂贵检查。
+
+谁依赖：Archive scan 的性能优化。
+
+能否重建：可以。
+
+删除后后果：下次 scan 会重新做相应验证，耗时增加；不会丢失 Telegram 归档事实。
+
+处理：Cleanup 可清。
+
+
+### 2. Archive temp_dir
+
+来源：bili_config.json 的 temp_dir；未配置时可能使用系统临时目录下 bili_archive。
+
+典型内容：
+
+- 临时 ZIP；
+- ZIP 清单快照；
+- WebP→PNG 转换结果；
+- 操作中间 JSON/TXT；
+- 上传前临时媒体。
+
+谁依赖：正在运行的 Archive 任务。
+
+能否重建：大部分可以从正式源和数据库重新生成。
+
+处理：Archive 不在运行、也不处于特殊人工恢复阶段时，可由 Cleanup 清。
+
+
+十、Archive：scan/维护报告
+========================
+
+### 1. reports\scan_events_*.txt
+
+生成：Archive scan。
+
+用途：记录某轮扫描事件/警告，可用于以后回顾历史。
+
+当前处理方式：不是按最近 N 份直接删，而是由 Cleanup 移到：
+
+reports\archived-reports\
+
+长期封存。
+
+
+### 2. 一次性迁移/维护报告
+
+典型：
+
+- archive_*_migration_*.json；
+- archive_bvid_backfill_preview_*.json；
+- archive_bvid_backfill_applied_*.json。
+
+用途：记录 UID、多 target、导航、作者名称历史、BVID backfill 等一次性维护过程。
+
+当前处理方式：移动到：
+
+reports\maintenance-reports\
+
+长期封存。
+
+它们不再和 Watcher/Export 日常报告一起“只留最近 3 份”。
+
+
+### 3. reports 根目录中的未知文件
+
+例如人工备注、新开发阶段尚未被 Cleanup 识别的报告。
+
+处理：当前保守不自动删除。Cleanup 不因为“在 reports 里且很旧”就猜它无用。
+
+
+十一、Archive / Watcher 数据库备份
+===============================
+
+位置：
+
+D:\Program files\Telethon\bili_archive\backups\db\
+
+可能来源：
+
+- migrate 前自动备份；
+- 手工 backup-db；
+- 高风险 Archive 操作前备份；
+- Watcher reconcile/schema 维护；
+- Cleanup checkpoint。
+
+作用：恢复正式 archive.db / watcher.db。
+
+当前 Cleanup retention：
+
+archive_*.db 和 watcher_*.db 分别按修改时间默认保留最近 5 份旧快照。
+
+注意：
+
+- retention 只认识当前匹配规则，不知道哪一份对你个人是“重大里程碑”；
+- 需要长期永久保存的特殊备份，应复制到独立长期备份位置；
+- `clean --apply` 会在 audit 后新建 cleanup checkpoint，因此执行结束后 backups\db 暂时看到比默认数量多一份是可能的；下一轮 audit 再按当前目录重算。
+
+
+### Cleanup checkpoint
+
+命名类似：
+
+archive_cleanup_checkpoint_*.db
+watcher_cleanup_checkpoint_*.db
+
+用途：正式删除前保存数据库状态。
+
+它只能恢复账本，不包含被永久删除的视频文件。
+
+
+十二、Archive：General / Telegram 记录在哪里
+=======================================
+
+General 导航、topic、message_id、package 等 Telegram 历史不是一批本地 TXT 文件的替代品，而是主要写入 archive.db。
+
+因此：
+
+- 不要认为删除某个 scan report 就会丢失 Telegram message_id；
+- 也不要认为保留所有本地 report 就可以替代 archive.db 备份。
+
+General 的 CLEAN / DIRTY / PIN_PENDING / ERROR 是导航同步状态，不是正式媒体目录删除的必要条件。
+
+
+十三、Export：实际导出媒体
+=======================
+
+默认目录：
+
+D:\Program files\Telethon\bili_archive\exports\
+
+或 `download --output-dir` 指定目录。
+
+生成者：bili_export.py download --apply。
+
+作用：用户主动从 Telegram 恢复/导出的媒体成品。
+
+谁依赖：用户后续人工使用，不属于 Watcher→Archive 的固定流水线。
+
+能否重建：只要 Telegram 远端仍存在且账号仍可访问，可以再次导出，但这不代表当前导出结果可以自动删除。
+
+处理：Cleanup 永不把实际 exports 成品当普通临时文件自动删除。
+
+是否保留由用户人工决定。
+
+
+十四、Export：`.part` 断点文件
+===========================
+
+位置：最终输出文件旁，例如：
+
+视频.mp4.part
+压缩包.zip.part
+
+用途：文档/视频/ZIP 等 Telegram 文件断点续传。
+
+任务中断后：保留，用相同输出目录和选择器重新运行可继续。
+
+Telegram photo 的当前实现不是相同断点策略；图片会整张重新下载。
+
+什么时候可删：
+
+- 确认不再继续这个导出任务；
+- 或确认该 `.part` 已经没有对应有效选择/远端文件。
+
+当前 Cleanup 不自动扫用户 exports 中的 `.part`；由用户人工处理。
+
+
+十五、Export：catalog 和报告
+==========================
+
+目录通常：
+
+D:\Program files\Telethon\bili_archive\reports\export\
+
+### 1. catalog_*.jsonl
+
+生成：bili_export.py catalog。
+
+作用：把 archive.db 中已经归档完成的目录导成结构化清单，可给人或外部 AI/工具筛选，再把 BVID/item/Telegram URL 交回 Export。
+
+能否重建：可以重新从数据库导出。
+
+处理：日常报告，Cleanup 默认按文件家族保留最近 3 份。
+
+
+### 2. export_preview_*.json
+
+生成：`inspect`。
+
+注意：`download` 不加 --apply 当前只在 CLI 预览，并不会额外写一份 preview report；正式的 export_preview 文件由 inspect 产生。
+
+用途：记录解析后的 target/message/media/作者/item/BVID 和问题。
+
+处理：默认最近 3 份。
+
+
+### 3. export_result_*.json
+
+生成：download --apply。
+
+位置：当前 0.3.2 写入 `reports\export\`，不是输出媒体目录。
+
+用途：记录 COMPLETED / SKIPPED_EXISTS / FAILED，以及本次 selection。
+
+处理：日常报告，默认最近 3 份。
+
+
+十六、Cleanup：manifest
+=====================
+
+位置：
+
+reports\cleanup\cleanup_manifest_*.json
+reports\cleanup\cleanup_manifest_*.txt
+
+生成：bili_cleanup.py audit。
+
+作用：记录 audit 时点的自动删除、自动封存、manual_review、路径和 guard。
+
+谁依赖：后续 inspect / clean。
+
+能否重建：可以重新 audit。
+
+重要边界：manifest 不是永久删除许可证。clean apply 前仍会重新 audit/revalidate。
+
+处理：Cleanup 自己按文件家族保留旧报告；当前默认上限为最近 5 个文件，不应机械理解为“5 组完整 JSON+TXT”。
+
+
+十七、Cleanup：result
+===================
+
+位置：
+
+reports\cleanup\cleanup_result_*.json
+
+生成：clean --apply。
+
+用途：记录实际 DELETED / ARCHIVED / SKIPPED_REVALIDATION / FAILED 等结果。
+
+能否重建：无法完全重建某一次真实执行的“当时结果”，因此比普通 preview 更有审计价值。
+
+处理：当前 Cleanup 按结果文件家族保留最近 5 份。
+
+如果某次清理发生重大异常，应把相应 result 和数据库 checkpoint 复制到长期故障记录位置，不要只依赖自动 retention。
+
+
+十八、Cleanup：封存目录
+=====================
+
+### reports\archived-reports\
+
+保存 Archive 历史 scan_events。
+
+处理：长期封存，当前不再自动裁剪。
+
+
+### reports\maintenance-reports\
+
+保存 Archive 一次性 migration / BVID backfill 等维护记录。
+
+处理：长期封存，当前不再自动裁剪。
+
+这两个目录的目标不是释放同磁盘空间，而是把日常 reports 根目录整理干净、保留历史证据。
+
+
+十九、脚本、配置、Cookie、Session
+==============================
+
+### scripts\
+
+当前脚本、旧版脚本、专项测试脚本默认不由 Cleanup 自动删除。
+
+原因：Cleanup 无法判断哪个旧脚本仍有开发/回滚价值。
+
+开发结束后需要整理脚本，应另做版本管理或人工归档，不要让文件清理脚本凭文件名猜。
+
+
+### config\watcher_config.json / bili_config.json
+
+正式配置。长期保留。
+
+
+### B站 Cookie
+
+Watcher 登录/权限访问所需。长期保留并注意账号安全。
+
+
+### Telethon `.session`
+
+Archive/Export 登录 Telegram 所需。长期保留并保护隐私。
+
+不要把 Session 当普通缓存删除，也不要上传到不可信位置。
+
+
+二十、SQLite `-wal` / `-shm`
+==========================
+
+archive.db / watcher.db 在 SQLite WAL 模式工作时可能出现：
+
+archive.db-wal
+archive.db-shm
+watcher.db-wal
+watcher.db-shm
+
+它们属于 SQLite 正在管理的数据库运行文件。
+
+不要因为文件名看起来像临时产物就手工批量删除。
+
+正常关闭相关进程后由 SQLite 自己处理；数据库维护应通过正式备份/恢复机制进行。
+
+
+二十一、__pycache__
+=================
+
+Python 自动生成的字节码缓存。
+
+能否重建：可以。
+
+谁依赖：只影响下次 Python import 的缓存性能，不保存业务历史。
+
+处理：Cleanup 可清。
+
+
+二十二、哪些东西默认不要让 Cleanup 自动决定
+========================================
+
+当前主要包括：
+
+- exports 实际恢复媒体；
+- scripts 下旧脚本/开发工具；
+- config / Cookie / Session；
+- reports 根目录无法识别用途的人工文件；
+- 活动 plan；
+- 活跃 Watcher current；
+- orphan incoming；
+- 无法唯一映射的正式投稿；
+- 开发测试 ZIP、diff、SHA256、故障样本。
+
+共同原因不是“它们一定永久有用”，而是：
+
+当前数据库和文件结构不能可靠证明它们已经没有用。
+
+这时正确动作是人工判断，而不是扩大 Cleanup 猜测范围。
+
+
+二十三、想快速看当前脚本实际策略
+==============================
+
+运行：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" outputs
+
+常见类别：
+
+KEEP
+→ 长期保留。
+
+DERIVED
+→ 可重建但体积小，默认不主动清。
+
+KEEP-ACTIVE
+→ 活跃阶段必须保留，终态后才能处理。
+
+CLEAN
+→ 满足当前条件时 Cleanup 自动处理。
+
+ARCHIVE
+→ 移到封存目录，不删除。
+
+MANUAL
+→ 需要人决定。
+
+outputs 只告诉你“这一类东西的默认策略和路径”，不代表某个具体文件现在已经满足删除条件。
+
+具体本轮候选仍以：
+
+audit
+→ manifest
+→ inspect
+→ clean revalidation
+
+为准。
+
+
+二十四、项目文件的最短判断法
+==========================
+
+看到一个不认识的文件时，按顺序问：
+
+1. 它是谁生成的？
+2. 它是长期账本、正式业务数据、活动工作区、可重建缓存，还是审计记录？
+3. 当前 Watcher/Archive/Export 是否还在依赖它继续运行？
+4. 如果删掉，能从哪里重建？重建会不会丢历史状态？
+5. Cleanup 当前是否已经有明确规则处理它？
+6. 如果 Cleanup 把它列为 manual_review，是否真的掌握足够证据人工删除？
+
+最危险的两种误区：
+
+【误区一】“这个文件很旧，所以能删。”
+
+活动 plan、数据库备份、历史身份文件可能很旧但仍有价值。
+
+【误区二】“这个文件能重新生成，所以能随时删。”
+
+新 plan 可以重新生成，但不能替代活动 batch 原 plan；新空数据库可以建立，但不能恢复旧 message_id/run/batch 历史。
+
+本项目更可靠的原则是：
+
+先判断生命周期和依赖，再判断能否清理；
+不要只看扩展名、修改时间或文件大小。

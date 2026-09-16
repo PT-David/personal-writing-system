@@ -1,0 +1,184 @@
+原文件 scripts/pixiv_workflow.py，第 237–249 行：
+
+  237:             ).fetchall()]
+  238:             ready = [dict(r) for r in conn.execute(
+  239:                 """
+  240:                 SELECT batch_id,status,selection_type,delivery_count,created_at
+  241:                 FROM ready_batches
+  242:                 WHERE selection_type='RUN' AND selection_json LIKE ? ORDER BY created_at
+  243:                 """, (f"%{target}%",)
+  244:             ).fetchall()]
+  245:             return {"type": "DL", "id": target, "run": run, "job_statuses": jobs,
+  246:                     "source_discovery_runs": sources, "exports": exports, "ready_batches": ready}
+  247:         if prefix == "RD":
+  248:             row = conn.execute("SELECT * FROM ready_batches WHERE batch_id=?", (target,)).fetchone()
+  249:             if not row:
+
+原文件 scripts/pixiv_workflow.py，第 322–455 行：
+
+  322: def discovery_plan_preview(
+  323:     db_config: DatabaseConfig,
+  324:     *,
+  325:     limit: int | None = None,
+  326:     bookmark_only: bool = False,
+  327:     author_ids: Sequence[str] | None = None,
+  328:     job_kind: str = "NOVEL_TXT",
+  329: ) -> dict[str, Any]:
+  330:     if limit is not None and limit < 1:
+  331:         raise WorkflowError("limit 必须大于等于 1。")
+  332:     authors = {str(v).strip() for v in (author_ids or []) if str(v).strip()}
+  333:     conn = connect_readonly(db_config)
+  334:     try:
+  335:         _ensure_schema7(conn)
+  336:         all_items = _aggregate_active_relations(conn)
+  337:         version_ids = {str(r[0]) for r in conn.execute(
+  338:             "SELECT DISTINCT novel_id FROM novel_versions WHERE status IN ('DOWNLOADED','VALIDATED','CLEANED')"
+  339:         ).fetchall()}
+  340:         active_job_ids = {str(r[0]) for r in conn.execute(
+  341:             "SELECT DISTINCT novel_id FROM download_jobs WHERE status IN ('PLANNED','DOWNLOADING','PROBED_READY','PROBED_WARNINGS','INCOMPLETE','INTAKE_PENDING','INGESTED')"
+  342:         ).fetchall()}
+  343:     finally:
+  344:         conn.close()
+  345: 
+  346:     filtered: list[dict[str, Any]] = []
+  347:     reason_relation_count = 0
+  348:     for item in all_items.values():
+  349:         reasons = item["reasons"]
+  350:         if bookmark_only and not any(r["reason_type"] == "BOOKMARK" for r in reasons):
+  351:             continue
+  352:         if authors and not any(
+  353:             r["reason_type"] == "AUTHOR_ARCHIVE" and str(r.get("subject_id") or "") in authors
+  354:             for r in reasons
+  355:         ):
+  356:             continue
+  357:         reason_relation_count += len(reasons)
+  358:         filtered.append(item)
+  359: 
+  360:     counts = Counter()
+  361:     candidates: list[dict[str, Any]] = []
+  362:     for item in filtered:
+  363:         counts["selected_unique"] += 1
+  364:         if str(item.get("availability_status") or "UNKNOWN") == "UNAVAILABLE":
+  365:             counts["unavailable"] += 1
+  366:             continue
+  367:         if item["novel_id"] in version_ids:
+  368:             counts["existing_version"] += 1
+  369:             continue
+  370:         if item["novel_id"] in active_job_ids:
+  371:             counts["existing_job"] += 1
+  372:             continue
+  373:         counts["candidate"] += 1
+  374:         candidates.append(item)
+  375:     candidates.sort(key=_candidate_sort_key)
+  376:     all_candidate_count = len(candidates)
+  377:     if limit is not None:
+  378:         candidates = candidates[:limit]
+  379:     for item in candidates:
+  380:         item["source_run_ids"] = sorted(item["source_run_ids"])
+  381:     fingerprint = _json_hash({
+  382:         "schema": 2,
+  383:         "job_kind": job_kind,
+  384:         "bookmark_only": bookmark_only,
+  385:         "author_ids": sorted(authors),
+  386:         "novel_ids": [x["novel_id"] for x in candidates],
+  387:     })
+  388:     source_counts: Counter[str] = Counter()
+  389:     source_relation_counts: Counter[str] = Counter()
+  390:     for item in candidates:
+  391:         for source_run_id in set(item["source_run_ids"]):
+  392:             source_counts[source_run_id] += 1
+  393:         for reason in item["reasons"]:
+  394:             source_run_id = reason.get("source_run_id")
+  395:             if source_run_id:
+  396:                 source_relation_counts[str(source_run_id)] += 1
+  397:     return {
+  398:         "job_kind": job_kind,
+  399:         "filters": {"bookmark_only": bookmark_only, "author_ids": sorted(authors), "limit": limit},
+  400:         "active_unique_novels": len(all_items),
+  401:         "selected_unique_novels": len(filtered),
+  402:         "selected_relation_count": reason_relation_count,
+  403:         "unavailable_count": counts["unavailable"],
+  404:         "existing_version_count": counts["existing_version"],
+  405:         "existing_active_job_count": counts["existing_job"],
+  406:         "all_candidate_count": all_candidate_count,
+  407:         "planned_candidate_count": len(candidates),
+  408:         "fingerprint": fingerprint,
+  409:         "source_run_ids": sorted(source_counts),
+  410:         "source_novel_counts": dict(source_counts),
+  411:         "source_relation_counts": dict(source_relation_counts),
+  412:         "candidates": candidates,
+  413:     }
+  414: 
+  415: 
+  416: def create_discovery_plan(
+  417:     db_config: DatabaseConfig,
+  418:     watcher_config: Any,
+  419:     *,
+  420:     limit: int | None = None,
+  421:     bookmark_only: bool = False,
+  422:     author_ids: Sequence[str] | None = None,
+  423:     display_name: str | None = None,
+  424:     job_kind: str = "NOVEL_TXT",
+  425:     dry_run: bool = False,
+  426: ) -> dict[str, Any]:
+  427:     migrate_database(db_config)
+  428:     preview = discovery_plan_preview(
+  429:         db_config, limit=limit, bookmark_only=bookmark_only,
+  430:         author_ids=author_ids, job_kind=job_kind,
+  431:     )
+  432:     if not preview["candidates"]:
+  433:         return {**preview, "created": False, "message": "没有需要创建的新下载任务。"}
+  434:     conn = connect_readonly(db_config)
+  435:     try:
+  436:         existing = conn.execute(
+  437:             """
+  438:             SELECT run_id,status,display_name,item_count,created_at FROM runs
+  439:             WHERE run_type='DOWNLOAD' AND status<>'CANCELLED' AND plan_fingerprint=?
+  440:             """, (preview["fingerprint"],)
+  441:         ).fetchone()
+  442:     finally:
+  443:         conn.close()
+  444:     if existing:
+  445:         return {**preview, "created": False, "existing_run": dict(existing)}
+  446:     if dry_run:
+  447:         return {**preview, "created": False, "dry_run": True}
+  448: 
+  449:     run_id = _run_id("DL")
+  450:     stamp = now_iso()
+  451:     name = (display_name or f"Discovery 下载计划 {stamp[:10]}").strip()
+  452:     plan_items = []
+  453:     with DatabaseLock(db_config.paths.lock_path, purpose="discovery_plan_create"):
+  454:         conn = connect_writable(db_config)
+  455:         try:
+
+原文件 scripts/pixiv_workflow.py，第 686–714 行：
+
+  686: def workflow_status(db_config: DatabaseConfig) -> dict[str, Any]:
+  687:     conn = connect_readonly(db_config)
+  688:     try:
+  689:         latest: dict[str, Any] = {}
+  690:         for key, run_type in (("DS", "DISCOVERY"), ("DL", "DOWNLOAD")):
+  691:             row = conn.execute(
+  692:                 "SELECT run_id,status,display_name,item_count,created_at FROM runs WHERE run_type=? ORDER BY created_at DESC LIMIT 1",
+  693:                 (run_type,),
+  694:             ).fetchone()
+  695:             latest[key] = dict(row) if row else None
+  696:         row = conn.execute(
+  697:             "SELECT batch_id,status,delivery_count,created_at FROM ready_batches ORDER BY created_at DESC LIMIT 1"
+  698:         ).fetchone()
+  699:         latest["RD"] = dict(row) if row else None
+  700:         author_total = conn.execute("SELECT COUNT(*) FROM discovery_sources WHERE source_type='AUTHOR' AND enabled=1").fetchone()[0]
+  701:         author_applied = conn.execute("SELECT COUNT(*) FROM discovery_sources WHERE source_type='AUTHOR' AND enabled=1 AND last_applied_run_id IS NOT NULL").fetchone()[0]
+  702:         pending_download = conn.execute(
+  703:             "SELECT COUNT(*) FROM download_jobs WHERE status NOT IN ('INGESTED','CANCELLED')"
+  704:         ).fetchone()[0]
+  705:         pending_ready = conn.execute(
+  706:             "SELECT COUNT(*) FROM ready_deliveries WHERE delivery_status NOT IN ('VERIFIED','CLEANED','CANCELLED')"
+  707:         ).fetchone()[0]
+  708:         return {"latest": latest, "author_sources": int(author_total), "author_applied": int(author_applied),
+  709:                 "pending_download_jobs": int(pending_download), "pending_ready_deliveries": int(pending_ready)}
+  710:     finally:
+  711:         conn.close()
+  712: 
+  713: 
+  714: def render_id_list(report: dict[str, Any]) -> str:

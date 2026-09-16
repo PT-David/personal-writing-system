@@ -1,0 +1,679 @@
+原文件 scripts/pixiv_watcher.py，第 164–164 行：
+
+  164: ASSET_PROFILES = {"FULL_MEDIA", "TEXT_META_ONLY"}
+
+原文件 scripts/pixiv_watcher.py，第 777–815 行：
+
+  777:     if asset_profile == "TEXT_META_ONLY":
+  778:         # 文本模式下，图片是策略性省略资产：即使目录中残留部分图片，也不纳入验收和 Intake。
+  779:         consumed.update(image_files)
+  780:         result.omitted_by_policy = {
+  781:             "cover": True,
+  782:             "embedded_images": True,
+  783:             "embedded_image_reference_count": len(markers),
+  784:             "ignored_local_image_count": len(image_files),
+  785:             "ignored_local_image_files": [path.name for path in sorted(image_files)],
+  786:         }
+  787:     else:
+  788:         cover_candidates = [p for p in image_files if p.stem == novel_id]
+  789:         if len(cover_candidates) > 1:
+  790:             result.errors.append(
+  791:                 "发现多个封面候选：" + ", ".join(path.name for path in cover_candidates)
+  792:             )
+  793:         elif cover_candidates:
+  794:             cover = cover_candidates[0]
+  795:             consumed.add(cover)
+  796:             fmt, width, height = read_image_size(cover)
+  797:             if fmt is None:
+  798:                 result.errors.append(f"封面不是可识别的图片：{cover.name}")
+  799:             result.images.append(
+  800:                 ImageRecord(
+  801:                     role="cover",
+  802:                     order=0,
+  803:                     path=str(cover),
+  804:                     file_name=cover.name,
+  805:                     suffix=cover.suffix.lower(),
+  806:                     image_format=fmt,
+  807:                     width=width,
+  808:                     height=height,
+  809:                     size_bytes=cover.stat().st_size,
+  810:                     sha256=sha256_file(cover) if options.hash_files else None,
+  811:                     mtime_ns=cover.stat().st_mtime_ns,
+  812:                 )
+  813:             )
+  814:         else:
+  815:             result.warnings.append("未找到小说封面；封面为可选文件。")
+
+原文件 scripts/pixiv_watcher.py，第 848–866 行：
+
+  848:                     image_format=fmt,
+  849:                     width=width,
+  850:                     height=height,
+  851:                     size_bytes=image.stat().st_size,
+  852:                     sha256=sha256_file(image) if options.hash_files else None,
+  853:                     mtime_ns=image.stat().st_mtime_ns,
+  854:                 )
+  855:             )
+  856:             if source_type == "uploadedimage" and source_id not in embedded_map:
+  857:                 result.warnings.append(
+  858:                     f"正文包含 uploadedimage:{source_id}，但 novelMeta.embeddedImages 没有对应键。"
+  859:                 )
+  860: 
+  861:         if result.missing_embedded_images:
+  862:             values = ", ".join(
+  863:                 f"{item['source_type']}:{item['source_id']}"
+  864:                 for item in result.missing_embedded_images
+  865:             )
+  866:             result.errors.append(f"正文明确引用但没有下载到的内嵌图片：{values}")
+
+原文件 scripts/pixiv_watcher.py，第 2883–2972 行：
+
+ 2883: def intake_status(db_config: Any, config: WatcherConfig, *, run_id: str) -> dict[str, Any]:
+ 2884:     ensure_schema_current(db_config)
+ 2885:     conn = connect_readonly(db_config)
+ 2886:     try:
+ 2887:         run, jobs = fetch_plan(conn, run_id)
+ 2888:         packages = {
+ 2889:             row["job_id"]: dict(row)
+ 2890:             for row in conn.execute("SELECT * FROM intake_packages WHERE run_id=?", (run_id,)).fetchall()
+ 2891:         }
+ 2892:     finally:
+ 2893:         conn.close()
+ 2894:     items: list[dict[str, Any]] = []
+ 2895:     for job in jobs:
+ 2896:         package = packages.get(job["job_id"])
+ 2897:         if not package:
+ 2898:             items.append({"novel_id": job["novel_id"], "job_id": job["job_id"], "status": "NOT_STARTED"})
+ 2899:             continue
+ 2900:         item = {
+ 2901:             "novel_id": job["novel_id"], "job_id": job["job_id"],
+ 2902:             "package_id": package["package_id"], "version_id": package["version_id"],
+ 2903:             "database_status": package["package_status"],
+ 2904:             "finalize_status": package["finalize_status"],
+ 2905:             "incoming_path": package.get("incoming_path"),
+ 2906:             "temp_path": package.get("temp_path"),
+ 2907:         }
+ 2908:         try:
+ 2909:             final_dir = (
+ 2910:                 _assert_under_root(
+ 2911:                     Path(package["incoming_path"]), config.paths.incoming_root,
+ 2912:                     label="状态检查 incoming 目录",
+ 2913:                 )
+ 2914:                 if package.get("incoming_path") else None
+ 2915:             )
+ 2916:             temp_dir = (
+ 2917:                 _assert_under_root(
+ 2918:                     Path(package["temp_path"]), config.paths.incoming_root,
+ 2919:                     label="状态检查临时目录",
+ 2920:                 )
+ 2921:                 if package.get("temp_path") else None
+ 2922:             )
+ 2923:         except WatcherError as exc:
+ 2924:             item["status"] = "RECOVERY_REQUIRED"
+ 2925:             item["error"] = str(exc)
+ 2926:             items.append(item)
+ 2927:             continue
+ 2928:         if package["package_status"] in {"COMPLETED", "REUSED"}:
+ 2929:             try:
+ 2930:                 verify_incoming_directory(
+ 2931:                     final_dir, expected_novel_id=job["novel_id"],
+ 2932:                     expected_content_sha256=package.get("source_package_sha256"),
+ 2933:                     expected_manifest_sha256=package.get("manifest_sha256"),
+ 2934:                 )
+ 2935:                 item["status"] = package["package_status"]
+ 2936:             except WatcherError as exc:
+ 2937:                 item["status"] = "RECOVERY_REQUIRED"
+ 2938:                 item["error"] = str(exc)
+ 2939:         elif final_dir and final_dir.is_dir():
+ 2940:             item["status"] = "STATUS_UPDATE_PENDING"
+ 2941:         elif package["package_status"] == "FILES_VERIFIED" and temp_dir and temp_dir.is_dir():
+ 2942:             item["status"] = "PUBLISH_PENDING"
+ 2943:         elif package["package_status"] == "PREPARING" and temp_dir and temp_dir.is_dir():
+ 2944:             item["status"] = "COPY_INCOMPLETE"
+ 2945:         else:
+ 2946:             item["status"] = "RECOVERY_REQUIRED"
+ 2947:             item["error"] = package.get("error_text") or "数据库状态与文件系统状态不一致。"
+ 2948:         items.append(item)
+ 2949:     counts = Counter(item["status"] for item in items)
+ 2950:     return {
+ 2951:         "run": run, "checked_at": now_iso(), "item_count": len(items),
+ 2952:         "status_counts": dict(sorted(counts.items())), "items": items,
+ 2953:     }
+ 2954: 
+ 2955: 
+ 2956: def render_intake_status(report: dict[str, Any]) -> str:
+ 2957:     lines = [
+ 2958:         "Intake 状态", "=" * 90,
+ 2959:         f"Run ID：{report['run']['run_id']}", f"小说：{report['item_count']}", "",
+ 2960:     ]
+ 2961:     for key, count in report["status_counts"].items():
+ 2962:         lines.append(f"  {key:<24} {count}")
+ 2963:     lines.append("")
+ 2964:     for item in report["items"]:
+ 2965:         lines.append(f"[{item['status']:<22}] {item['novel_id']}｜{item.get('version_id') or '-'}")
+ 2966:         if item.get("error"):
+ 2967:             lines.append(f"  {item['error']}")
+ 2968:     lines.append("\n本命令只读，不修复也不删除文件。")
+ 2969:     return "\n".join(lines) + "\n"
+ 2970: 
+ 2971: 
+ 2972: def _finalize_check_package(
+
+原文件 scripts/pixiv_watcher.py，第 3231–3325 行：
+
+ 3231: def intake_finalize(
+ 3232:     db_config: Any,
+ 3233:     config: WatcherConfig,
+ 3234:     *,
+ 3235:     run_id: str,
+ 3236:     apply_delete: bool,
+ 3237: ) -> dict[str, Any]:
+ 3238:     ensure_schema_current(db_config)
+ 3239:     conn = connect_readonly(db_config)
+ 3240:     try:
+ 3241:         run, jobs = fetch_plan(conn, run_id)
+ 3242:         packages = [
+ 3243:             dict(row)
+ 3244:             for row in conn.execute(
+ 3245:                 "SELECT * FROM intake_packages WHERE run_id=? ORDER BY novel_id",
+ 3246:                 (run_id,),
+ 3247:             ).fetchall()
+ 3248:         ]
+ 3249:         package_by_job = {item["job_id"]: item for item in packages}
+ 3250:         missing_checks = [
+ 3251:             {
+ 3252:                 "novel_id": job["novel_id"],
+ 3253:                 "package_id": None,
+ 3254:                 "status": "BLOCKED",
+ 3255:                 "blockers": ["该下载任务尚无 Intake package。"],
+ 3256:                 "source_path": str(config.paths.pbd_root / job["novel_id"]),
+ 3257:                 "incoming_path": None,
+ 3258:             }
+ 3259:             for job in jobs
+ 3260:             if job["job_id"] not in package_by_job
+ 3261:         ]
+ 3262:         if not apply_delete:
+ 3263:             checks = [
+ 3264:                 _finalize_check_package(conn, package, config)
+ 3265:                 for package in packages
+ 3266:             ] + missing_checks
+ 3267:             return {
+ 3268:                 "run_id": run_id,
+ 3269:                 "mode": "PREVIEW",
+ 3270:                 "item_count": len(checks),
+ 3271:                 "ready_count": sum(item["status"] == "READY" for item in checks),
+ 3272:                 "blocked_count": sum(item["status"] == "BLOCKED" for item in checks),
+ 3273:                 "items": checks,
+ 3274:             }
+ 3275:     finally:
+ 3276:         conn.close()
+ 3277: 
+ 3278:     # Apply mode intentionally does not repeat the complete preview scan before
+ 3279:     # acquiring the project lock. Each package is verified once under the lock,
+ 3280:     # then every file is checked again immediately before unlinking (TOCTOU guard).
+ 3281:     results: list[dict[str, Any]] = []
+ 3282:     with DatabaseLock(db_config.paths.lock_path, purpose=f"intake_finalize:{run_id}"):
+ 3283:         for package_index, package in enumerate(packages, start=1):
+ 3284:             if package.get("finalize_status") == "COMPLETED":
+ 3285:                 results.append({
+ 3286:                     "novel_id": package["novel_id"],
+ 3287:                     "package_id": package["package_id"],
+ 3288:                     "status": "ALREADY_FINALIZED",
+ 3289:                     "resume": False,
+ 3290:                     "blockers": [],
+ 3291:                     "source_path": package["source_path"],
+ 3292:                     "incoming_path": package.get("incoming_path"),
+ 3293:                 })
+ 3294:                 continue
+ 3295:             ro = connect_readonly(db_config)
+ 3296:             try:
+ 3297:                 fresh_row = ro.execute(
+ 3298:                     "SELECT * FROM intake_packages WHERE package_id=?",
+ 3299:                     (package["package_id"],),
+ 3300:                 ).fetchone()
+ 3301:                 fresh_package = dict(fresh_row) if fresh_row else package
+ 3302:                 fresh = _finalize_check_package(ro, fresh_package, config)
+ 3303:             finally:
+ 3304:                 ro.close()
+ 3305:             if fresh["status"] != "READY":
+ 3306:                 _set_finalize_blocked(
+ 3307:                     db_config, package["package_id"], fresh.get("blockers", [])
+ 3308:                 )
+ 3309:                 results.append(fresh)
+ 3310:                 continue
+ 3311: 
+ 3312:             if fresh_package.get("finalize_status") != "READY":
+ 3313:                 _mark_finalize_ready(db_config, package["package_id"])
+ 3314:                 ro = connect_readonly(db_config)
+ 3315:                 try:
+ 3316:                     fresh_package = dict(
+ 3317:                         ro.execute(
+ 3318:                             "SELECT * FROM intake_packages WHERE package_id=?",
+ 3319:                             (package["package_id"],),
+ 3320:                         ).fetchone()
+ 3321:                     )
+ 3322:                     fresh = _finalize_check_package(ro, fresh_package, config)
+ 3323:                 finally:
+ 3324:                     ro.close()
+ 3325:                 if fresh["status"] != "READY":
+
+原文件 scripts/pixiv_watcher.py，第 4499–4690 行：
+
+ 4499: def shard_profile_status(
+ 4500:     db_config: Any,
+ 4501:     *,
+ 4502:     run_id: str,
+ 4503: ) -> dict[str, Any]:
+ 4504:     ensure_schema_current(db_config)
+ 4505:     conn = connect_readonly(db_config)
+ 4506:     try:
+ 4507:         _ensure_schema10(conn)
+ 4508:         workflow = _shard_workflow(conn, run_id)
+ 4509:         batch_size = int(workflow["active_batch_size"])
+ 4510:         exports = _shard_exports(conn, run_id=run_id, batch_size=batch_size)
+ 4511:         rows: list[dict[str, Any]] = []
+ 4512:         for export in exports:
+ 4513:             jobs = _jobs_for_export(conn, export)
+ 4514:             rows.append(
+ 4515:                 {
+ 4516:                     "batch_no": int(export["batch_no"]),
+ 4517:                     "item_count": len(jobs),
+ 4518:                     "profile_counts": _profile_counts(jobs),
+ 4519:                     "ingested_count": sum(str(job["status"]) == "INGESTED" for job in jobs),
+ 4520:                     "pending_count": sum(str(job["status"]) != "INGESTED" for job in jobs),
+ 4521:                 }
+ 4522:             )
+ 4523:         changes = [
+ 4524:             dict(row)
+ 4525:             for row in conn.execute(
+ 4526:                 "SELECT * FROM asset_profile_changes WHERE run_id=? ORDER BY created_at",
+ 4527:                 (run_id,),
+ 4528:             ).fetchall()
+ 4529:         ]
+ 4530:     finally:
+ 4531:         conn.close()
+ 4532:     # 合并相邻且配置完全一致的分片，便于用户阅读。
+ 4533:     ranges: list[dict[str, Any]] = []
+ 4534:     for row in rows:
+ 4535:         signature = tuple(sorted(row["profile_counts"].items()))
+ 4536:         if ranges and ranges[-1]["signature"] == signature:
+ 4537:             ranges[-1]["to_batch"] = row["batch_no"]
+ 4538:             ranges[-1]["item_count"] += row["item_count"]
+ 4539:             ranges[-1]["ingested_count"] += row["ingested_count"]
+ 4540:             ranges[-1]["pending_count"] += row["pending_count"]
+ 4541:         else:
+ 4542:             ranges.append(
+ 4543:                 {
+ 4544:                     "from_batch": row["batch_no"],
+ 4545:                     "to_batch": row["batch_no"],
+ 4546:                     "profile_counts": row["profile_counts"],
+ 4547:                     "item_count": row["item_count"],
+ 4548:                     "ingested_count": row["ingested_count"],
+ 4549:                     "pending_count": row["pending_count"],
+ 4550:                     "signature": signature,
+ 4551:                 }
+ 4552:             )
+ 4553:     for item in ranges:
+ 4554:         item.pop("signature", None)
+ 4555:     return {
+ 4556:         "run_id": run_id,
+ 4557:         "batch_size": batch_size,
+ 4558:         "current_batch_no": int(workflow["current_batch_no"]),
+ 4559:         "batch_count": len(exports),
+ 4560:         "ranges": ranges,
+ 4561:         "changes": changes,
+ 4562:     }
+ 4563: 
+ 4564: 
+ 4565: def shard_profile_set(
+ 4566:     db_config: Any,
+ 4567:     config: WatcherConfig,
+ 4568:     *,
+ 4569:     run_id: str,
+ 4570:     from_batch: int,
+ 4571:     profile: str,
+ 4572:     only_uningested: bool = True,
+ 4573:     confirmed: bool = False,
+ 4574:     note: str | None = None,
+ 4575: ) -> dict[str, Any]:
+ 4576:     if from_batch < 1:
+ 4577:         raise WatcherError("--from-batch 必须大于等于 1。")
+ 4578:     profile = _asset_profile(profile)
+ 4579:     migrate_database(db_config)
+ 4580:     conn = connect_readonly(db_config)
+ 4581:     try:
+ 4582:         _ensure_schema10(conn)
+ 4583:         workflow = _shard_workflow(conn, run_id)
+ 4584:         batch_size = int(workflow["active_batch_size"])
+ 4585:         exports = _shard_exports(conn, run_id=run_id, batch_size=batch_size)
+ 4586:         if not exports or from_batch > len(exports):
+ 4587:             raise WatcherError(f"分片 {from_batch} 超出范围；当前共有 {len(exports)} 个分片。")
+ 4588:         first_export = next(item for item in exports if int(item["batch_no"]) == from_batch)
+ 4589:         first_order = int(first_export["first_plan_order"])
+ 4590:         clauses = ["run_id=?", "plan_order>=?"]
+ 4591:         params: list[Any] = [run_id, first_order]
+ 4592:         if only_uningested:
+ 4593:             clauses.append("status<>'INGESTED'")
+ 4594:         jobs = [
+ 4595:             dict(row)
+ 4596:             for row in conn.execute(
+ 4597:                 "SELECT * FROM download_jobs WHERE " + " AND ".join(clauses) + " ORDER BY plan_order",
+ 4598:                 params,
+ 4599:             ).fetchall()
+ 4600:         ]
+ 4601:         previous = Counter(_asset_profile(job.get("asset_profile")) for job in jobs)
+ 4602:         affected = [job for job in jobs if _asset_profile(job.get("asset_profile")) != profile]
+ 4603:         current_batch = int(workflow["current_batch_no"])
+ 4604:     finally:
+ 4605:         conn.close()
+ 4606:     preview = {
+ 4607:         "mode": "APPLY" if confirmed else "PREVIEW",
+ 4608:         "confirmation_required": not confirmed,
+ 4609:         "run_id": run_id,
+ 4610:         "from_batch": from_batch,
+ 4611:         "to_batch": len(exports),
+ 4612:         "batch_size": batch_size,
+ 4613:         "profile": profile,
+ 4614:         "only_uningested": only_uningested,
+ 4615:         "selected_job_count": len(jobs),
+ 4616:         "affected_job_count": len(affected),
+ 4617:         "previous_profile_counts": dict(sorted(previous.items())),
+ 4618:         "current_batch_no": current_batch,
+ 4619:         "note": note,
+ 4620:     }
+ 4621:     if not confirmed or not affected:
+ 4622:         return preview
+ 4623: 
+ 4624:     archived = None
+ 4625:     if current_batch >= from_batch:
+ 4626:         archived = _archive_fixed_current_task(
+ 4627:             db_config,
+ 4628:             config,
+ 4629:             run_id=run_id,
+ 4630:             batch_size=batch_size,
+ 4631:             batch_no=current_batch,
+ 4632:             reason="ASSET_PROFILE_CHANGED",
+ 4633:             mark_imported=False,
+ 4634:         )
+ 4635:     with DatabaseLock(db_config.paths.lock_path, purpose=f"asset_profile:{run_id}:{from_batch}"):
+ 4636:         conn = connect_writable(db_config)
+ 4637:         try:
+ 4638:             conn.execute("BEGIN IMMEDIATE")
+ 4639:             _ensure_schema10(conn)
+ 4640:             stamp = now_iso()
+ 4641:             ids = [str(job["job_id"]) for job in affected]
+ 4642:             placeholders = ",".join("?" for _ in ids)
+ 4643:             conn.execute(
+ 4644:                 f"UPDATE download_jobs SET asset_profile=?,updated_at=? WHERE job_id IN ({placeholders})",
+ 4645:                 [profile, stamp, *ids],
+ 4646:             )
+ 4647:             conn.execute(
+ 4648:                 """
+ 4649:                 INSERT INTO asset_profile_changes(
+ 4650:                     change_id,run_id,from_batch_no,asset_profile,only_uningested,
+ 4651:                     affected_job_count,previous_profile_counts_json,note,created_at
+ 4652:                 ) VALUES (?,?,?,?,?,?,?,?,?)
+ 4653:                 """,
+ 4654:                 (
+ 4655:                     f"APC-{uuid.uuid4().hex}", run_id, from_batch, profile,
+ 4656:                     1 if only_uningested else 0, len(affected),
+ 4657:                     json.dumps(dict(sorted(previous.items())), ensure_ascii=False, sort_keys=True),
+ 4658:                     note, stamp,
+ 4659:                 ),
+ 4660:             )
+ 4661:             # 旧的“已导入”标记可能属于被取消的旧资产任务；切换策略后必须清除。
+ 4662:             conn.execute(
+ 4663:                 """
+ 4664:                 UPDATE pbd_shard_workflows
+ 4665:                 SET imported_batch_no=NULL,imported_task_kind=NULL,
+ 4666:                     imported_task_sha256=NULL,imported_at=NULL,updated_at=?
+ 4667:                 WHERE run_id=? AND COALESCE(imported_batch_no,0)>=?
+ 4668:                 """,
+ 4669:                 (stamp, run_id, from_batch),
+ 4670:             )
+ 4671:             conn.execute("COMMIT")
+ 4672:         except Exception:
+ 4673:             if conn.in_transaction:
+ 4674:                 conn.execute("ROLLBACK")
+ 4675:             raise
+ 4676:         finally:
+ 4677:             conn.close()
+ 4678:     state = _derive_shard_state(
+ 4679:         db_config, config, run_id=run_id, batch_size=batch_size, batch_no=current_batch
+ 4680:     )
+ 4681:     state = _sync_current_task_for_state(db_config, config, state)
+ 4682:     return {
+ 4683:         **preview,
+ 4684:         "confirmation_required": False,
+ 4685:         "archived_previous_task": archived,
+ 4686:         "current": state,
+ 4687:     }
+ 4688: 
+ 4689: 
+ 4690: def render_shard_profile_status(report: dict[str, Any]) -> str:
+
+原文件 scripts/pixiv_watcher.py，第 5442–5640 行：
+
+ 5442: def shard_continue(
+ 5443:     db_config: Any,
+ 5444:     config: WatcherConfig,
+ 5445:     *,
+ 5446:     run_id: str,
+ 5447:     intake_limit: int | None = None,
+ 5448:     progress: Callable[[dict[str, Any]], None] | None = None,
+ 5449:     max_steps: int = 20,
+ 5450: ) -> dict[str, Any]:
+ 5451:     """自动执行所有纯本地步骤，遇到需要用户操作 PBD 时停止。"""
+ 5452:     if max_steps < 1:
+ 5453:         raise WatcherError("max_steps 必须大于等于 1。")
+ 5454:     actions: list[dict[str, Any]] = []
+ 5455:     total_intake = 0
+ 5456:     for _ in range(max_steps):
+ 5457:         status = shard_status(db_config, config, run_id=run_id)
+ 5458:         current = status["current"]
+ 5459:         action = str(current["action"])
+ 5460:         if action in {"IMPORT_CURRENT_SHARD", "IMPORT_CURRENT_RETRY"}:
+ 5461:             current = _sync_current_task_for_state(db_config, config, current)
+ 5462:             return {
+ 5463:                 "run_id": run_id,
+ 5464:                 "boundary": "IMPORT_PBD",
+ 5465:                 "actions": actions,
+ 5466:                 "message": (
+ 5467:                     "请把唯一 CURRENT_PBD_TASK.json 导入 PBD；导入后运行 "
+ 5468:                     "shard-next --yes，或在 shard-session 中输入 I。"
+ 5469:                 ),
+ 5470:                 "current": current,
+ 5471:             }
+ 5472:         if action == "WAIT_FOR_PBD_OR_AUDIT":
+ 5473:             if int(current.get("existing_directory_count") or 0) == 0:
+ 5474:                 return {
+ 5475:                     "run_id": run_id,
+ 5476:                     "boundary": "WAIT_PBD",
+ 5477:                     "actions": actions,
+ 5478:                     "message": "尚未检测到本分片下载目录；等待 PBD 产生文件后再继续。",
+ 5479:                     "current": current,
+ 5480:                 }
+ 5481:             audit = shard_audit(db_config, config, run_id=run_id)
+ 5482:             actions.append(
+ 5483:                 {
+ 5484:                     "action": "SHARD_AUDIT",
+ 5485:                     "batch_no": audit["batch_no"],
+ 5486:                     "ready_count": audit["ready_count"],
+ 5487:                     "retry_count": audit["retry_count"],
+ 5488:                 }
+ 5489:             )
+ 5490:             continue
+ 5491:         if action == "RUN_SHARD_AUDIT":
+ 5492:             audit = shard_audit(db_config, config, run_id=run_id)
+ 5493:             actions.append(
+ 5494:                 {
+ 5495:                     "action": "SHARD_AUDIT",
+ 5496:                     "batch_no": audit["batch_no"],
+ 5497:                     "ready_count": audit["ready_count"],
+ 5498:                     "retry_count": audit["retry_count"],
+ 5499:                 }
+ 5500:             )
+ 5501:             continue
+ 5502:         if action == "RUN_SHARD_INTAKE":
+ 5503:             remaining_limit = None
+ 5504:             if intake_limit is not None:
+ 5505:                 remaining_limit = max(0, intake_limit - total_intake)
+ 5506:                 if remaining_limit == 0:
+ 5507:                     return {
+ 5508:                         "run_id": run_id,
+ 5509:                         "boundary": "INTAKE_LIMIT_REACHED",
+ 5510:                         "actions": actions,
+ 5511:                         "message": f"本次已达到 Intake 限额 {intake_limit} 篇。",
+ 5512:                         "current": current,
+ 5513:                     }
+ 5514:             intake = shard_intake_apply(
+ 5515:                 db_config,
+ 5516:                 config,
+ 5517:                 run_id=run_id,
+ 5518:                 limit=remaining_limit,
+ 5519:                 progress=progress,
+ 5520:             )
+ 5521:             total_intake += int(intake["ready_applied_count"])
+ 5522:             actions.append(
+ 5523:                 {
+ 5524:                     "action": "SHARD_INTAKE",
+ 5525:                     "batch_no": intake["batch_no"],
+ 5526:                     "applied_count": intake["ready_applied_count"],
+ 5527:                     "remaining_ready_count": intake["remaining_ready_count"],
+ 5528:                     "elapsed_seconds": intake["elapsed_seconds"],
+ 5529:                 }
+ 5530:             )
+ 5531:             if intake_limit is not None and total_intake >= intake_limit:
+ 5532:                 return {
+ 5533:                     "run_id": run_id,
+ 5534:                     "boundary": "INTAKE_LIMIT_REACHED",
+ 5535:                     "actions": actions,
+ 5536:                     "message": f"本次已达到 Intake 限额 {intake_limit} 篇。",
+ 5537:                     "current": intake["current"],
+ 5538:                 }
+ 5539:             continue
+ 5540:         if action == "ADVANCE" or current["effective_status"] == "COMPLETE":
+ 5541:             advanced = shard_next(db_config, config, run_id=run_id)
+ 5542:             actions.append(
+ 5543:                 {
+ 5544:                     "action": "SHARD_NEXT",
+ 5545:                     "advanced": bool(advanced.get("advanced")),
+ 5546:                     "workflow_complete": bool(advanced.get("workflow_complete")),
+ 5547:                 }
+ 5548:             )
+ 5549:             if advanced.get("workflow_complete"):
+ 5550:                 return {
+ 5551:                     "run_id": run_id,
+ 5552:                     "boundary": "WORKFLOW_COMPLETE",
+ 5553:                     "actions": actions,
+ 5554:                     "message": "全部分片均已 Intake 完成。",
+ 5555:                     "current": advanced.get("current"),
+ 5556:                 }
+ 5557:             continue
+ 5558:         return {
+ 5559:             "run_id": run_id,
+ 5560:             "boundary": "MANUAL_REVIEW",
+ 5561:             "actions": actions,
+ 5562:             "message": current.get("message") or f"未识别状态：{action}",
+ 5563:             "current": current,
+ 5564:         }
+ 5565:     return {
+ 5566:         "run_id": run_id,
+ 5567:         "boundary": "STEP_LIMIT",
+ 5568:         "actions": actions,
+ 5569:         "message": f"已执行 {max_steps} 个自动步骤，为防止循环已停止。",
+ 5570:         "current": shard_status(db_config, config, run_id=run_id)["current"],
+ 5571:     }
+ 5572: 
+ 5573: 
+ 5574: def shard_session(
+ 5575:     db_config: Any,
+ 5576:     config: WatcherConfig,
+ 5577:     *,
+ 5578:     run_id: str,
+ 5579:     intake_limit: int | None = None,
+ 5580:     input_func: Callable[[str], str] = input,
+ 5581:     output: Callable[[str], None] = print,
+ 5582:     progress: Callable[[dict[str, Any]], None] | None = None,
+ 5583: ) -> dict[str, Any]:
+ 5584:     """保持 CLI 打开的交互式向导；不控制浏览器，只等待用户确认。"""
+ 5585:     rounds = 0
+ 5586:     while True:
+ 5587:         rounds += 1
+ 5588:         report = shard_continue(
+ 5589:             db_config,
+ 5590:             config,
+ 5591:             run_id=run_id,
+ 5592:             intake_limit=intake_limit,
+ 5593:             progress=progress,
+ 5594:         )
+ 5595:         output(render_shard_continue(report))
+ 5596:         boundary = report["boundary"]
+ 5597:         if boundary in {"WORKFLOW_COMPLETE", "INTAKE_LIMIT_REACHED", "MANUAL_REVIEW", "STEP_LIMIT"}:
+ 5598:             return {**report, "session_rounds": rounds}
+ 5599:         if boundary == "IMPORT_PBD":
+ 5600:             answer = input_func(
+ 5601:                 "已将 CURRENT_PBD_TASK.json 导入 PBD 后输入 I；退出输入 Q："
+ 5602:             ).strip().upper()
+ 5603:             if answer == "Q":
+ 5604:                 return {**report, "session_rounds": rounds, "session_exit": True}
+ 5605:             if answer != "I":
+ 5606:                 output("未确认导入，本轮不改变状态。")
+ 5607:                 continue
+ 5608:             marked = shard_next(
+ 5609:                 db_config, config, run_id=run_id, confirm_import=True
+ 5610:             )
+ 5611:             output(render_shard_state(marked))
+ 5612:             continue
+ 5613:         if boundary == "WAIT_PBD":
+ 5614:             answer = input_func(
+ 5615:                 "PBD 本轮结束、停止或卡住后输入 D 开始 Audit；退出输入 Q："
+ 5616:             ).strip().upper()
+ 5617:             if answer == "Q":
+ 5618:                 return {**report, "session_rounds": rounds, "session_exit": True}
+ 5619:             if answer != "D":
+ 5620:                 output("尚未确认 PBD 已结束，本轮不执行 Audit。")
+ 5621:                 continue
+ 5622:             audit = shard_audit(db_config, config, run_id=run_id)
+ 5623:             output(render_shard_audit(audit))
+ 5624:             continue
+ 5625: 
+ 5626: 
+ 5627: def pbd_reconcile(
+ 5628:     db_config: Any,
+ 5629:     config: WatcherConfig,
+ 5630:     *,
+ 5631:     run_id: str,
+ 5632:     probe_existing: bool = False,
+ 5633: ) -> dict[str, Any]:
+ 5634:     ensure_schema_current(db_config)
+ 5635:     conn = connect_readonly(db_config)
+ 5636:     try:
+ 5637:         run = conn.execute(
+ 5638:             "SELECT * FROM runs WHERE run_id=? AND run_type='DOWNLOAD'", (run_id,)
+ 5639:         ).fetchone()
+ 5640:         if not run:
+
+原文件 scripts/pixiv_watcher.py，第 6483–6503 行：
+
+ 6483: 
+ 6484:     shard_profile_status_cmd = sub.add_parser(
+ 6485:         "shard-profile-status",
+ 6486:         help="显示一个 DL 各分片的 FULL_MEDIA / TEXT_META_ONLY 资产模式。",
+ 6487:     )
+ 6488:     shard_profile_status_cmd.add_argument("--run", required=True, help="DL Run ID。")
+ 6489: 
+ 6490:     shard_profile_set_cmd = sub.add_parser(
+ 6491:         "shard-profile-set",
+ 6492:         help="从指定分片起切换未 Intake 小说的资产模式。",
+ 6493:     )
+ 6494:     shard_profile_set_cmd.add_argument("--run", required=True, help="DL Run ID。")
+ 6495:     shard_profile_set_cmd.add_argument("--from-batch", type=int, required=True, help="从哪个分片开始。")
+ 6496:     shard_profile_set_cmd.add_argument(
+ 6497:         "--profile", choices=["FULL_MEDIA", "TEXT_META_ONLY"], required=True,
+ 6498:         help="FULL_MEDIA 下载图片；TEXT_META_ONLY 只归档 TXT 与 meta.json。",
+ 6499:     )
+ 6500:     shard_profile_set_cmd.add_argument("--note", help="可选变更备注。")
+ 6501:     shard_profile_set_cmd.add_argument("--yes", action="store_true", help="确认写入资产模式。")
+ 6502: 
+ 6503:     shard_next_cmd = sub.add_parser(

@@ -1,0 +1,656 @@
+﻿P站小说归档_Watcher下载命令速查
+============================================================
+
+适用脚本：pixiv_watcher.py 0.6.14
+当前方式：TXT＋元数据；PBD 关闭封面与内嵌图片。
+
+命令在 Windows CMD 中逐条执行；PowerShell 在整行最前面加 & 和空格。
+DL-... 替换为完整下载计划 ID；RD-... 是 Ready 批次 ID；DS-... 是扫描 ID。
+a/b/c 为并列用法，按需选择；数字编号表示先后操作。示例中的作者／小说 ID 使用前替换。
+
+
+一、 启动检查
+============================================================
+
+1.1 discovery-check-config｜检查 Discovery 配置与 Cookie 文件
+------------------------------------------------------------
+
+a. 隔一段时间重新使用，先检查本地配置和 Cookie 能否读取：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-check-config
+
+看 Cookie 路径、格式和错误。需要更新时，在已登录 Pixiv 的页面用 Get cookies.txt LOCALLY 导出 Netscape 格式，保存到：
+D:\Program files\Telethon\pixiv_archive\config\pixiv_cookies.txt
+
+
+1.2 discovery-probe｜联网确认账号与收藏接口
+------------------------------------------------------------
+
+a. 本次准备同步网站内容时执行；只接收已有文件、生成 Ready 时可跳过。
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-probe
+
+确认账号正确、公开／非公开收藏接口均成功，再同步。浏览器登录正常，不保证导出的旧 Cookie 仍有效。
+只处理本地内容时，Cookie 错误不代表 Incoming 或 Ready 不可用，可继续查本地任务。
+
+
+1.3 使用 PBD 下载前，核对设置
+------------------------------------------------------------
+
+小说格式：TXT；保存小说元数据：开启，JSON 格式。
+命名规则：PBD_PixivNovel/{id}/{id}
+关闭：自动合并系列、封面下载、内嵌图片下载。
+关闭：下载去重、不抓取已下载作品、某篇符合条件时下载整个系列。
+
+注意：
+- 改设置后，要刷新准备下载的 Pixiv 标签页，防止配置未生效
+- PBD 会把小说下载到【C:\Users\lenovo\Downloads\PBD_PixivNovel\小说ID\】，含 小说ID.txt 和 小说ID-meta.json。
+- Watcher 端的文本模式另在 5.2 设置。
+
+- 日常检查完成后进入第 2 节。
+- 如果第一次对数据库／收藏进行初始化，先做 10.1；已有项目不用重复初始化。
+
+
+二、 查看待办，找回任务 ID
+============================================================
+
+2.1 workflow-status｜查看项目总览
+------------------------------------------------------------
+
+a. 如果上一轮任务中断，忘记上次做到哪里时，可以使用该指令；如果重新开始新的下载任务，则可以跳过。
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" workflow-status
+
+CLI输出：
+- 未结束下载 Job：未接收且未取消的下载任务数。
+- 未验证/未清理 Delivery：已有投放的上传、核验等后续待办，不等于 PBD 待下载数量。
+【总览为 0 也要结合实际阶段判断】尚未生成 Ready 的内容，不会被计入已有投放的待办数。
+再看最近的一次 DS、DL、RD：
+三个最近 ID 分别统计，未必属于同一批。需要找更早任务时继续 2.2。
+
+
+2.2 id-list｜按时间、名称找回历史 ID（如果知道 ID 可跳过）
+------------------------------------------------------------
+
+a. 最近 50 条 DS、DL、RD
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-list
+
+b. 只找下载计划
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-list --type DL --limit 50
+
+c. 只找 Ready 批次
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-list --type RD --limit 50
+
+d. 再看更早的 50 条下载计划
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-list --type DL --limit 50 --offset 50
+
+--limit 可改为 200；--offset 50 跳过筛选后最新的 50 条记录，不是跳过 50 篇小说。
+复制要处理的完整 ID，进入第 3 节。继续下载通常找 DL，继续 Ready 找 RD；无需先找出 DS 才能续跑。
+
+确认旧任务已结束、这次准备新建任务时，直接进入第 4 节。
+
+
+三、 确认当前任务做到哪一步（新建任务可跳过）
+============================================================
+
+3.1 id-show｜核对任务记录及后续批次
+------------------------------------------------------------
+
+a. 查看下载计划：名称、任务数、Job 状态和后续 RD
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-show --id DL-...
+
+b. 查看 Ready 批次：构建状态、选择类型和各投放状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" id-show --id RD-...
+
+DL 的总状态 PLANNED 不等于“还没下载”，先看 Job：
+- 如果有尚未完成且未取消的任务，继续 3.2；
+- 全部 INGESTED，进入第 7 节检查接收内容。
+- 已经有 RD 时也可先用 3.3 核对。
+
+【“后续 RD”只列出按这个 DL 构建 RD 的批次】
+以前按 --all-pending 或 --novel 生成的 RD 可能不在这里；没列出时，可按 2.2-c 找历史 RD，不能直接断定从未做过 Ready。
+已有 RD 也可能只处理了此前成功接收的部分；剩余下载仍按 Job 和分片进度判断。
+
+
+3.2 shard-status｜看当前分片、已接收数量和下一步
+------------------------------------------------------------
+
+本节用于已分片 DL；尚未建立分片，或命令提示没有分片工作流时，进入第 5 节。
+
+a. 查看当前片和整体分片进度
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-status --run DL-...
+
+b. 查看指定片，例如第 3 片
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-status --run DL-... --batch 3
+
+--batch 只选择本次查询范围，不把工作流永久跳到那里。
+
+输出中的“下一步”对应：
+
+IMPORT_CURRENT_SHARD／IMPORT_CURRENT_RETRY  去第 6 节导入当前任务；重试前先看失败原因。
+WAIT_FOR_PBD_OR_AUDIT                      等本轮 PBD 结束，再让所选方式检查。
+RUN_SHARD_AUDIT                            已有下载文件，进入第 6 节检查。
+RUN_SHARD_INTAKE                           有合格项待接收，进入第 6 节继续。
+ADVANCE／当前片 COMPLETE                    继续原下载方式，推进下一片或确认整批结束。
+
+看“当前分片”“已 Intake／待处理”“Audit 可接收／需重试”。具体哪篇失败，打开同屏“最新分片 Audit”报告。
+【status 不重新检查文件】，本地目录存在不代表完整；补好文件后仍显示旧结果，按 9.1 重新 Audit。
+已经设置的旧任务直接去第 6 节。
+
+
+3.3 ready-status｜已有 RD 时，核对本地 Ready
+------------------------------------------------------------
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-status --batch RD-...
+
+构建已完成、无效为 0：本地 Ready 已备好，由 Archive 继续上传或核验。
+构建未完成：按 7.2 恢复原范围的 build。
+有无效文件或具体错误：按 9.4 处理。
+
+UPLOADED／VERIFIED 等可能出现在“异常项”列表，它们不全代表文件坏了；结合状态、“无效”数量和错误判断。
+本命令检查本地文件与记录，不联网核验 Telegram。已经上传核验的批次无需为继续旧任务重下小说。
+
+
+四、 同步更新，创建本轮 DL（日常开启新任务时指令）
+============================================================
+
+4.1 discovery-sync｜把收藏与作者变化写入数据库
+------------------------------------------------------------
+
+a. 同步收藏和已登记作者【日常】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-sync --yes
+
+b. 只同步收藏
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-sync --bookmark-only --yes
+
+c. 只同步指定作者；--author 可重复
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-sync --authors-only --author 123456 --yes
+
+去掉 c 的 --author 123456，保留 --authors-only，可同步全部已登记作者。
+【--yes 才联网并写入】不带时只说明将做什么；单独写 --author 仍会同步收藏，要只查作者需保留 --authors-only。
+看收藏变化、作者变化及失败／不可用明细；局部失败可重跑对应范围。成功记录保留，再到 4.2 查看候选。
+
+
+4.2 discovery-plan-preview / discovery-plan-create｜先看范围，再建计划
+------------------------------------------------------------
+
+a. 安排全部剩余候选（日常；先预览，再创建）
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-plan-preview
+
+确认数量与范围后创建：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-plan-create --name "日常增量归档"
+
+b. 先建 10 篇试跑计划，代替 a
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-plan-preview --limit 10
+
+确认后创建：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-plan-create --limit 10 --name "10篇试跑"
+
+候选来自数据库当前记录，包含以前扫描留下的待办，不只取最近一次 DS。
+已有版本或已有下载任务的小说会被排除；候选为 0 但原任务没结束时，回第 2—3 节找原 DL。
+
+注意：
+- 创建后生成完整 DL ID，后面的 --run 都填它；
+- create 直接创建，不加 --yes；
+- --limit 10 决定本次生成 DL 包含的小说数。如果 DL 数量较大影响一次性下载，那么需要设置分片，由第 5 节的 --batch-size 决定每轮交给 PBD 下载的数量 。
+- --limit 按计划排序选前 N 篇，不保证是最新发表的 N 篇。建好的 DL 不会自动加入后来新增候选。
+- 只安排收藏或某位作者时，preview 与 create 都加相同的 --bookmark-only 或 --author 123456；两者同用取交集。
+
+
+五、 设置分片与文本模式（新生成DL时需要设置）
+============================================================
+
+5.1 shard-setup｜把 DL 按每片 100 篇处理
+------------------------------------------------------------
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-setup --run DL-... --batch-size 100
+
+235 篇分成 100、100、35 篇，始终使用同一 DL。省略 --batch-size 默认 50。
+setup 只建立分片和当前任务文件；还没有启动 PBD 下载。
+【普通恢复不用重新 setup】改变片大小会改变编号、范围和导入记录。
+
+
+5.2 shard-profile-set / shard-profile-status｜设置每个新 DL 的后续审核模式
+------------------------------------------------------------
+当前脚本设置了 2 种检测模式：
+- TEXT_META_ONLY：检查 TXT＋元数据，忽略图片；
+- FULL_MEDIA：缺正文引用的内嵌图片会阻断，缺封面本身只产生警告。
+
+1）预览：从第 1 片到最后一片
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-profile-set --run DL-... --from-batch 1 --profile TEXT_META_ONLY
+
+2）确认范围后写入
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-profile-set --run DL-... --from-batch 1 --profile TEXT_META_ONLY --yes
+
+3）核对各片待处理任务是否已为 TEXT_META_ONLY（只执行预览不会修改）
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-profile-status --run DL-...
+
+注意：
+- 新 DL 默认 FULL_MEDIA，不继承前一个 DL 的设置；
+- 即使PBD 设置取消下载图片后，Watcher 仍需单独切换 TEXT_META_ONLY
+- --from-batch 1 表示从第一片开始执行，已被Intake INGESTED 的任务跳过，历史版本不改。
+
+确认模式后，进入第 6 节。旧 DL 不确定模式时，只先执行第 3 条查询；需要改模式才做预览和写入。
+
+
+六、 PBD 导入、小说下载、文件检查与接收（session／continue／手动，选一种）
+============================================================
+
+三种方式都要在浏览器 PBD 中导入任务、下载文件。
+Audit 检查落盘文件；Intake 把合格内容复制到 Incoming 并登记版本。自动方式会代做这两步，手动方式分别执行。
+
+【每次导入本次 CLI 给出的 CURRENT_PBD_TASK.json】
+D:\Program files\Telethon\pixiv_archive\plans\download\DL-...\CURRENT\CURRENT_PBD_TASK.json
+
+同名文件会变成新片或本片剩余重试项。确认交给 PBD 后可能移入 CURRENT\completed，该目录名只表示任务文件已交接。
+PBD 本轮下载结束后，Watcher 还要检查和接收；接收成功才进入 Ready。
+
+
+6A. shard-session｜同一个窗口连续操作
+------------------------------------------------------------
+
+【启动／恢复原 DL】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-session --run DL-...
+
+IMPORT_PBD：在 PBD 导入当前 JSON，确认任务已被接受；回 session 输入 I 并回车，再让 PBD 开始／继续下载。
+WAIT_PBD：等本轮下载结束；卡住时先停止写入，再输入 D 并回车，开始检查和接收。
+WORKFLOW_COMPLETE：全部分片已接收，进入第 7 节。
+
+【I 确认已导入；D 发起 Audit】已有文件时 session 也可能自动检查，不保证每次都先 I 后 D。
+新片或剩余项需要下载时，再按 IMPORT_PBD 提示操作。其他停止原因看 6D。
+
+【暂停】在等待 I／D 时输入 Q 并回车；它不停止浏览器。下次仍用原 DL 执行本节命令。
+【数量上限】session 的 --intake-limit 会在内部多轮推进时重新计数，所以不一定该参数有效。如果需要明确限制单次的上限，用 6B-b 或 6C 的 C4-c。
+
+
+6B. shard-continue｜每次自动推进到人工操作处就退出
+------------------------------------------------------------
+
+1）先执行 continue，查看本次停止位置
+
+a. 自动检查、接收、推进【日常】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-continue --run DL-...
+
+b. 本次调用最多接收 20 篇，代替 a
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-continue --run DL-... --intake-limit 20
+
+--intake-limit 不限制 PBD 下载量；下一次调用重新计数，已接收部分保留。
+
+2）出现 IMPORT_PBD：在 PBD 导入当前 JSON，确认已接受任务，再记录交接
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-next --run DL-... --yes
+
+【--yes 只确认已导入，不代表已下载或接收】随后在 PBD 开始／继续下载。
+
+3）本轮 PBD 下载结束或已停止写入，再执行第 1 步所选的 a／b
+
+IMPORT_PBD：处理新片或剩余重试项，回第 2 步。
+WAIT_PBD：核对下载是否仍在进行、是否产生文件；本轮结束后再继续。
+WORKFLOW_COMPLETE：全部分片已接收，进入第 7 节。其他停止原因看 6D。
+
+continue 退出后不在后台监测浏览器。暂停后也从第 1 步继续原 DL。
+
+
+6C. 手动｜逐步执行 next、Audit、Intake
+------------------------------------------------------------
+
+C1) 取得当前任务和下一步
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-next --run DL-...
+
+需要导入 → C2；已有文件待 Audit → C3；已有可接收项 → C4；全部完成 → 第 7 节。
+已交给 PBD 且仍在下载时，先等本轮结束，再做 C3。
+
+C2) 在 PBD 接受当前 JSON 后确认导入
+在 PBD 导入当前任务 JSON，确认小说已出现在任务列表，再执行：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-next --run DL-... --yes
+
+在 PBD 开始／继续下载。--yes 只记“已导入”；等本轮结束或停止写入后做 C3。
+
+C3) 检查当前片
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-audit --run DL-...
+
+看“可接收”和“需重试”数量。READY_TEXT_ONLY 表示 TXT＋元数据通过，可以接收。
+有可接收项 → C4；全部失败 → 先按第 9 节修正原因，再从 C5 取得重试任务。
+
+C4) 接收当前片合格项
+
+a. 预览接收范围、空间和阻断
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-intake-preview --run DL-...
+
+b. 确认后接收全部合格项（直接执行，不加 --yes）
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-intake-apply --run DL-...
+
+c. 本次只接收当前片最多 20 篇，代替 b
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-intake-apply --run DL-... --limit 20
+
+已完成的 Job 记为 INGESTED。限额不跨片；仍有合格项时可重复 b／c 继续接收。
+
+C5) 接收后整理当前任务，决定重试本片或进入下一片
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-next --run DL-...
+
+新片／剩余重试项 → 回 C2；还有合格项没接收 → C4；提示先 Audit → C3。
+工作流状态 COMPLETED、全部分片已 Intake → 第 7 节。
+next 本身不代做 Audit 和 Intake。暂停后可从 C1 重新判断入口。
+
+
+6D. 部分成功、限额与其他停止原因
+------------------------------------------------------------
+
+【部分成功】100 篇中 92 篇通过、8 篇失败，可以先接收 92 篇，再补剩余 8 篇。
+session／continue 自动接收合格项；手动方式执行 C4。重试前读错误，不要反复导入原来的整片列表。
+
+【浏览器仍在写入，程序已要求重试】先等本轮结束或停止；按 9.1 更新检查，再回原方式继续，暂不叠加导入另一份任务。
+
+INTAKE_LIMIT_REACHED：本次接收限额已到，再次调用可继续，或确认整批是否刚好全部完成。
+STEP_LIMIT：一次自动推进已达 20 个步骤；看动作和当前状态，正常则再次调用，反复同一错误则先处理。
+MANUAL_REVIEW：按同屏原因人工处理；文件或接收异常查第 9 节。
+
+STEP_LIMIT 的 20 是步骤数，不是小说数。自动方式以 WORKFLOW_COMPLETE 确认全部接收结束。
+Intake 成功后 PBD 副本仍保留，需要腾空间时另做第 8 节。
+
+
+七、 检查接收内容，生成并核对 Ready
+============================================================
+
+7.1 intake-status｜确认 Incoming 正式版本完整
+------------------------------------------------------------
+
+a. 下载接收完成后核验状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" intake-status --run DL-...
+
+COMPLETED／REUSED：接收或复用完成，正式文件通过当前检查。
+NOT_STARTED：还没接收，回第 6 节处理。
+COPY_INCOMPLETE 等接收／恢复异常：先按 9.3 处理，再生成对应内容的 Ready。
+
+如果本次DL只下载了一部分，也可以用该指令处理已下载的成功部分，确认那些小说的接收内容完整，再继续 7.2；未完成下载仍可后续下载。
+Incoming 位于 F:\新建文件夹\p站小说-temp\，保存正式版本和 package_manifest.json，不能因为名字带 temp 就清空。
+
+
+7.2 ready-preview / ready-build｜为本轮 DL 准备 Ready
+------------------------------------------------------------
+
+【本次内容已全部具备完整 Ready 时，可跳过构建】
+同一 DL 后来又接收了小说，仍要重新预览该 DL，并构建新增内容所需的投放。
+构建中断时，保留已生成文件，按原范围重跑 build。
+日常使用 --run DL-...；以前按 --novel 或 --all-pending 构建的旧任务，也应按原范围处理，见 10.3。
+
+1）预览目标、阻断和预计新增占用
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-preview --run DL-...
+
+看小说版本数、投放数、没有投放关系、阻断与空间。一个小说可进入收藏／作者／系列多个位置，投放数可以大于小说数。
+没有投放关系：按 10.2 补充；文件错误：按 9.4 处理。确认后再构建。
+
+2）生成 Ready（直接执行，不加 --yes）
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-build --run DL-...
+
+【记录实际返回的 RD ID】同内容重复执行可能复用原 RD；以返回结果为准，再做 7.3。
+已有批次的新建／复用统计不一定代表本次新增复制量。
+
+【--all-pending 会选中符合条件的已上传历史内容】它不表示“只处理未上传”，本轮日常归档使用 --run 即可。
+
+
+7.3 ready-status｜收尾检查，交给 Archive
+------------------------------------------------------------
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-status --batch RD-...
+
+确认本地构建完成、无效为 0，再由 pixiv_archive.py 继续上传和核验；状态判断同 3.3。
+保留 RD ID、Ready 投放目录及批次清单：
+F:\新建文件夹\p站小说\_batches\RD-....json
+
+本地 Ready 完成不等于 Telegram 已完成。数据库、Incoming 原版本和 Ready 清单均保留。
+
+
+八、 intake-finalize｜按需清理 PBD 下载副本【可跳过】
+============================================================
+
+Intake 后 PBD 与 Incoming 各有一份内容。如果需要清理PBD下载文件夹时执行。
+【范围是整个 DL】没有 --batch／--limit，可能同时清理多个已接收分片的副本。
+
+1）预览哪些副本可删
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" intake-finalize --run DL-...
+
+看“可删除”“阻断”和具体原因。Incoming 完整、PBD 源内容仍与接收时一致等检查通过，才可自动清理。
+
+2）确认后删除【永久删除，不进回收站】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" intake-finalize --run DL-... --yes
+
+逐篇判断；部分阻断不会阻止其他合格项删除。不要求先上传 Telegram，本命令保留 Incoming、Ready 和数据库。
+
+按需：看全部逐篇明细，包括以前已清理的项
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" --json intake-finalize --run DL-...
+
+“已完成”可以包含过去清理的项，不等于本次新删数量；旧项为 ALREADY_FINALIZED。
+残留图片、源文件变化、Incoming 损坏等阻断按 9.5 处理。
+
+九、 常见问题：按出错环节查找
+============================================================
+
+9.1 下载文件与 Audit｜补好文件后重新检查
+------------------------------------------------------------
+
+先等 PBD 本轮结束或停止写入。session 正在等待确认时，可先 Q 退出，再检查当前片：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-audit --run DL-...
+
+通过后回原 session／continue；手动方式继续 6C 的 C4。status 中旧的 Audit 数量不能代替这次检查。
+
+NOT_FOUND：核对 PBD 是否接受任务、是否被下载去重跳过，以及实际下载目录。
+INCOMPLETE：按错误补必需文件；只有 TXT 时，检查“保存小说元数据 JSON”，修改后刷新 Pixiv 标签页。
+DOWNLOADING：浏览器仍在写入，等结束后再检查。
+INVALID／UNKNOWN_ARTIFACT：核对错误 ID、损坏元数据或重复／额外文件；需要保留排查的副本移到该小说目录之外。
+
+【不下载图片，却报缺内嵌图】先按 5.2 确认并切换 TEXT_META_ONLY，再执行本节 Audit；TXT＋元数据完整时无需重下正文。
+【任务 JSON 不等于元数据】CURRENT_PBD_TASK.json 不能改名充当 小说ID-meta.json。
+
+按需：单独检查一篇小说，也明确使用文本模式
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" probe 12345678 --profile TEXT_META_ONLY
+
+独立 probe 默认 FULL_MEDIA，不自动继承 DL 的模式。
+
+
+9.2 导入误确认｜shard-task-reopen
+------------------------------------------------------------
+
+只在 PBD 实际没接受任务，却输入 I 或执行了 next --yes 时使用：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-task-reopen --run DL-...
+
+清除当前导入标记，保留已 Intake 进度。根据已有文件，可能重新给 JSON，也可能先要求 Audit，按输出回第 6 节。
+PBD 已接受任务、只是 CURRENT 移到 completed 时，正常继续下载和检查，不用 reopen。
+
+
+9.3 Intake｜复制中断，或正式内容后来损坏
+------------------------------------------------------------
+
+1）查看逐篇接收状态和路径
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" --json intake-status --run DL-...
+
+incoming_path 是正式版本目录；temp_path 是接收临时目录。
+
+2）COPY_INCOMPLETE／PUBLISH_PENDING／STATUS_UPDATE_PENDING：先解决空间、占用等问题，保留现有文件，再检查并继续接收。
+
+例如异常明确在第 3 片，两条命令选择同一片；只处理当前片时，两条都去掉 --batch 3：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-audit --run DL-... --batch 3
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-intake-apply --run DL-... --batch 3
+
+完成后再执行 7.1 的 intake-status。RECOVERY_REQUIRED 先看具体原因，不按状态名直接删除临时文件。
+
+【已 INGESTED 的版本后来缺文件】
+自动下载方式会跳过已接收 Job，反复运行不保证修复旧版本。用一致备份恢复原文件与 package_manifest.json，再检查。
+没有一致备份时保留内容和错误，按《步骤》9.5 处理；正式内容未恢复前，暂停它的 Ready 与 PBD 副本清理。
+
+
+9.4 Ready｜区分构建中断、来源缺失和投放副本损坏
+------------------------------------------------------------
+
+构建中断：保留已生成目录，按 7.2／10.3 恢复原范围的 build，核对实际返回 RD。
+报错路径在 Incoming：先按 9.3 恢复正式内容；重建 Ready 不能找回缺失的来源正文。
+
+Incoming 完整、已有 Ready 投放文件异常时，先预览指定小说：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-rebuild --novel 12345678
+
+确认范围正确、预览允许重建后执行：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" ready-rebuild --novel 12345678 --yes
+
+只修某类投放，两条都加同一个 --destination，值可用 AUTHOR_HOME／COLLECTION／SERIES。
+已上传、核验或清理的投放通常受保护；预览不允许时按原因处理，不手工改状态绕过。完成后再查对应 RD 的 ready-status。
+上传后特殊修复条件见《脚本使用指南》14.5。
+
+
+9.5 PBD 副本清理｜intake-finalize 被阻断
+------------------------------------------------------------
+
+残留图片／额外副本：TEXT_META_ONLY 不接收图片，清理时残留文件仍可能阻断；核对需要保留的内容后处理，再预览。
+PBD 源文件变化：先确认是否补下载了新内容，不能直接当作此前已接收的那份删除。
+Incoming 校验失败：保留 PBD 副本，按 9.3 恢复正式版本。
+PBD 目录已手工删除：用 intake-status 确认 Incoming 完整即可，不用为让 finalize 成功而重下。
+
+
+9.6 来源与目录归属｜按需诊断
+------------------------------------------------------------
+
+a. 小说反复无法取得：检查当前 Pixiv 详情；--novel 可重复
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" discovery-anomaly-probe --novel 12345678
+
+只出诊断，不自动取消任务。技术失败不能直接判为作品已删除。
+暂时取不到时，可先接收并为成功部分生成 Ready，记录剩余小说；当前没有把任意失败单篇直接当作已接收的通用跳过命令。
+
+b. PBD 中有其他小说目录：查看分别属于哪个计划
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" pbd-reconcile --run DL-...
+
+CURRENT_DL 属于本 DL；OTHER_DL 属于别的计划；UNPLANNED 尚无下载任务。本命令不搬文件、不清理。
+
+
+9.7 退出码与运行锁
+------------------------------------------------------------
+
+退出码 2：先读同屏输出；可能是参数错误，也可能是 Audit 已完成但仍有重试项，合格部分仍可接收。
+Ctrl+C／窗口关闭：按中断阶段恢复；接收查 9.3，Ready 查 9.4，保留已有文件。
+数据库占用／运行锁：先确认旧 Watcher／Archive 是否仍在执行；残留锁处理查《脚本使用指南》3.7。
+
+十、 按需补充【正常日常任务可跳过】
+============================================================
+
+10.1 首次初始化｜整个项目从未建立时使用
+------------------------------------------------------------
+
+已有生产数据库丢失时，应先恢复正确备份，不用新建空库代替原记录。升级和迁移的完整操作见《步骤》1.4。
+
+1）首次建库
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" db-init
+
+2）不确定是否已初始化收藏，先查状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" bookmark-bootstrap-status
+
+已有收藏初始化记录则跳过第 3 步；作者尚未完成首次扫描时继续第 4 步。
+
+3）预览首次完整收藏，确认账号、数量与异常后写入
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" bookmark-bootstrap-preview
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" bookmark-bootstrap-apply --yes
+
+apply 会重新联网读取，结果可能与先前 preview 不同。日常更新收藏使用 discovery-sync，不反复 bootstrap-apply。
+
+4）需要建立已登记作者的完整小说记录时，扫描全部启用作者
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" author-scan-apply --all --yes
+
+5）用刚返回的作者 DS 检查结果
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" author-scan-status --run DS-...
+
+看该作者 Run 的人数统计和失败来源，常规输出不会逐个列出所有作者名。省略 --run 时使用最近作者 Run；它不用于查询 discovery-sync 的增量 DS。
+首次作者扫描及重试详见《步骤》1.6—1.7；初始化完成后回第 2 节，确认进度并安排下载。
+
+
+10.2 relation｜Ready 缺归档位置，或需要增加位置时使用
+------------------------------------------------------------
+
+正常 Discovery 已建立关系，本节跳过。
+
+a. 查看一篇小说已有的归档关系
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" relation-list --novel 12345678
+
+b. 加入作者归档【直接写入，不加 --yes】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" relation-add --novel 12345678 --type AUTHOR_ARCHIVE
+
+需要所属系列归档时，将类型换成 SERIES_ARCHIVE；小说必须确有系列。
+
+c. 追加到主收藏归档【只改本项目安排，不替 Pixiv 账号点击收藏】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" relation-add --novel 12345678 --type BOOKMARK
+
+d. 整个 DL 补作者归档，并加入各篇实际所属系列【先预览，再写入】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" relation-add-run --run DL-... --type AUTHOR_ARCHIVE --include-series --dry-run
+
+确认后去掉 --dry-run 即执行：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" relation-add-run --run DL-... --type AUTHOR_ARCHIVE --include-series
+
+按需要选择目标，不必把每种都加一遍。MANUAL／REFRESH 只记录取得原因，单独存在时不能决定 Ready 归档位置。
+补好后回 7.2 预览；旧小说单独增加位置时，按 10.3 的 --novel 范围准备，无需重下正文。
+
+
+10.3 旧 Ready 的选择范围｜忘了原来怎样 build 时使用
+------------------------------------------------------------
+
+查看该 RD 的完整记录，找到 batch 中的 selection_type、selection_json：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" --json id-show --id RD-...
+
+RUN          使用 selection_json 中的 run_id，按 7.2 的 --run DL-... 处理。
+NOVELS       使用 novel_ids；把 7.2 两条命令的 --run DL-... 换成 --novel 实际小说ID，多篇重复 --novel。
+ALL_PENDING  原来使用 --all-pending；准备再次核查全部符合条件的内容时，两条命令都改用该参数。
+
+【恢复原命令，也可能选中后来新增的内容】--all-pending 范围随当前记录变化，重复 build 不保证返回原 RD。先预览，再以 build 实际返回 ID 检查。
+需要只核对原 RD 时，使用 ready-status --batch RD-...，不必重新 build 全部历史内容。
+
+
+10.4 其他特定用途与旧指令
+------------------------------------------------------------
+
+手工指定小说／重取正文：plan-create 仍有效，完整用法见《步骤》11.1。
+作者全量补扫、失败重试：见《步骤》11.2、1.7。
+精确缺图豁免：见《脚本使用指南》11.5；本项目整体不保存图片使用 TEXT_META_ONLY。
+
+【旧未分片入口】plan-export、audit、intake-preview、intake-apply 只用于未启用分片的 DL；已分片任务不使用，完整说明见《步骤》12.1。
+【旧名称】shard-task-imported 对应当前 shard-next --yes；session 内用 I 确认。
+intake-status／intake-finalize 是当前共用命令，适用于分片 DL。
+
+需要查看某条命令的完整参数，在该子命令后加 --help。例如：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\pixiv_archive\scripts\pixiv_watcher.py" shard-continue --help
+
+
+11. 命令定位
+============================================================
+
+节号均指本速查；配套《步骤》为 Watcher操作步骤_v1_20260908，《脚本使用指南》为 Watcher脚本使用指南_v2_20260908。
+
+discovery-check-config      1.1      配置与 Cookie 文件
+discovery-probe             1.2      登录账号与收藏接口
+workflow-status             2.1      项目待办总览
+id-list                     2.2      --type；--limit；--offset
+id-show                     3.1      --id；旧 RD 完整范围见 10.3
+shard-status                3.2      --run；--batch
+ready-status                3.3、7.3 --batch RD-...
+discovery-sync              4.1      --yes；--bookmark-only；--authors-only；--author
+discovery-plan-preview      4.2      --limit；--bookmark-only；--author
+discovery-plan-create       4.2      同 preview 筛选；--name
+shard-setup                 5.1      --run；--batch-size
+shard-profile-set           5.2      --from-batch；--profile；--yes
+shard-profile-status        5.2      --run
+shard-session               6A       --run；I／D／Q
+shard-continue              6B       --run；--intake-limit
+shard-next                  6B、6C   不加 --yes：整理／推进；加 --yes：确认导入
+shard-audit                 6C、9.1  --run；指定片恢复见 9.3
+shard-intake-preview        6C       --run；可加 --batch
+shard-intake-apply          6C、9.3  --run；--limit；--batch
+intake-status               7.1、9.3 --run；完整明细用全局 --json
+ready-preview              7.2      日常 --run；其他范围见 10.3
+ready-build                7.2      与 preview 使用相同范围
+intake-finalize             第 8 节  --run；--yes 永久删除 PBD 副本
+probe                      9.1      小说 ID；--profile TEXT_META_ONLY
+shard-task-reopen           9.2      导入误确认；--run
+ready-rebuild              9.4      --novel；--destination；--yes
+discovery-anomaly-probe     9.6-a    --novel 可重复
+pbd-reconcile              9.6-b    --run；查目录归属
+db-init                    10.1     仅首次建立项目
+bookmark-bootstrap-status  10.1     是否已有首次收藏记录
+bookmark-bootstrap-preview 10.1     预览首次收藏
+bookmark-bootstrap-apply   10.1     --yes；首次写入
+author-scan-apply           10.1     --all；--yes；全量扫描
+author-scan-status          10.1     --run DS-...；作者扫描结果
+relation-list              10.2-a   --novel
+relation-add               10.2-b、c --novel；--type
+relation-add-run           10.2-d   --run；--type；--include-series；--dry-run
