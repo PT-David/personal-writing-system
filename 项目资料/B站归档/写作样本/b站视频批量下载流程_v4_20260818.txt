@@ -1,0 +1,1076 @@
+﻿B站视频批量下载流程
+===================
+
+当前脚本：bili_watcher.py 0.3.8-access-refresh-optin
+正式视频目录：F:\新建文件夹\b站视频
+临时下载目录：F:\新建文件夹\b站视频-temp
+Watcher 数据库：D:\Program files\Telethon\bili_archive\data\watcher.db
+
+该流程用于日常检查 B站 UP 更新、下载新增投稿，并把通过验收的视频整理到正式作者目录。
+自动下载无法处理时，可以继续使用 DownKyi 手工补救。
+
+下载完成后，再按照【b站视频批量上传流程.txt】进入 Telegram 上传阶段。
+
+
+【日常流程速览】
+
+已有 UP 的普通增量更新，一般只需要：
+
+1. scan --details
+2. 检查 scan 的新增数量和失败 UP
+3. download --pending
+4. status
+5. 有异常再处理 FAILED / DownKyi / 权限 / 来源失效等分支
+6. 状态确认后进入 bili_archive.py scan
+
+有新增 UP 时，在 scan 前增加：
+
+新建 UP 文件夹
+→ sync-creators
+→ preview-creator（需要选择基线时）
+→ init-creator
+→ scan
+
+如果只是配置没有变化、Cookie 正常、没有新增 UP，不需要每次都运行 check-config、check-login、sync-creators 或 init-creator。
+
+
+## 【第一步（首次使用、换电脑或配置变化时）】
+
+已经长期正常运行的生产项目可以直接跳到【第二步】或【第三步】。
+
+
+### 1. 检查 yt-dlp
+
+安装或升级：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" -m pip install -U "yt-dlp[default]"
+
+检查版本：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" -m yt_dlp --version
+
+
+### 2. 检查主要路径
+
+watcher_config.json 当前主要路径应对应：
+
+- root_dir：F:\新建文件夹\b站视频
+- database_file：data\watcher.db
+- incoming_dir：F:\新建文件夹\b站视频-temp
+- reports_dir：reports\watcher
+- creator_home_url_filename：新建文本文档.txt
+- history_filename：历史上传记录.txt
+- legacy_baseline：2026-07-03T00:00:00+08:00
+- cookie_file：D:\Program files\Telethon\bili_archive\config\bilibili_cookies.txt
+
+完整配置项、FFmpeg/aria2 路径和下载参数见【bili_watcher脚本使用指南.txt】。
+
+
+### 3. check-config：检查项目是否可以运行
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" check-config
+
+它会检查视频根目录、UP 主页文件、数据库/临时目录/报告目录、yt-dlp、FFprobe、aria2 和 Cookie 配置等。
+
+正常时重点看最后是否出现：
+
+结论：配置检查通过。
+
+如果提示 FFprobe、aria2、yt-dlp 或路径不可用，应先处理配置问题，不建议直接开始 scan/download。
+
+
+### 4. check-login：检查 Cookie 登录状态
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" check-login
+
+重点看：
+
+登录状态：已登录
+
+如果 Cookie 文件存在但显示未登录，重新获取 Cookie 后再继续。
+
+【常用 Cookie 获取方式】
+在已经登录 B站的浏览器中使用【Get cookies.txt LOCALLY】导出，然后保存为：
+
+D:\Program files\Telethon\bili_archive\config\bilibili_cookies.txt
+
+脚本也保留浏览器 Cookie 辅助导出命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" export-cookies --yes
+
+如果 Edge/Chromium 直接读取 Cookie 失败，可以继续使用手工导出的 Netscape Cookie 文件。具体处理见 Watcher 使用指南。
+
+
+### 5. init-db：第一次建立 watcher.db
+
+仅整个项目第一次建立 Watcher 数据库时需要重点执行：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-db
+
+第一次运行会：
+- 创建 watcher.db；
+- 识别当时已经存在的 UP；
+- 把这些旧 UP 设置为 CUTOFF 模式；
+- 使用固定基线 2026-07-03T00:00:00+08:00；
+- 不下载视频；
+- 不修改 archive.db。
+
+这里的基线表示：后续第一次 scan 只把基线之后属于 Watcher 接管范围的投稿写入数据库。
+因此不会因为第一次建库，就把这些作者以前的全部历史作品都纳入 Watcher。
+
+已有 watcher.db 时不要为了“重新扫描”而删除数据库。
+再次运行 init-db 主要用于验证、同步和数据库兼容处理，不会清空现有记录。
+
+
+## 【第二步（新增 UP 或 UP 改名时）】
+
+如果本地没有新增 UP，也没有需要处理的作者改名，直接进入【第三步】。
+
+
+### 1. 新增 UP：建立作者目录
+
+建立：
+
+F:\新建文件夹\b站视频\新UP主\
+
+至少放入：
+
+新UP主
+└─ 新建文本文档.txt
+
+TXT 中写：
+
+https://space.bilibili.com/数字UID
+
+
+### 2. sync-creators：把本地作者变化同步到 watcher.db
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" sync-creators
+
+真正新增的 UP 会显示为：
+
+UNINITIALIZED
+
+并提示后续使用 init-creator。
+
+
+### 3. 如果只是作者改名
+
+Watcher 以 UID 判断作者身份，作者名不是唯一身份。
+
+如果你已经把原作者目录直接改成新名称，旧目录不再存在，再运行 sync-creators，程序可以根据同一 UID 更新数据库中的 UP 名称、文件夹路径和主页 URL。
+
+如果旧名目录和新名目录同时存在，而且两个目录中的主页 URL 指向同一 UID，sync-creators 会提示：
+
+检测到疑似改名（未自动移动文件）
+
+这时不要重新 init-creator，也不要手工随意删除旧目录。
+
+先预览：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" reconcile-creators
+
+确认旧名、新名、UID 和移动内容都正确后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" reconcile-creators --apply
+
+程序会安全归并旧目录，并更新数据库路径和旧名称记录。
+
+注意：
+如果 B站已经改名，但本地文件夹仍保持旧名，普通 scan 不会自动把本地文件夹改成 B站新昵称。作者改名处理主要依据本地作者目录和同一 UID。
+
+
+### 4. preview-creator：查看新增 UP 最近投稿【可选】
+
+如果准备使用 BVID 作为扫描基线，可以先查看该作者最近投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" preview-creator --creator "UP主名称" --limit 50
+
+它只访问 B站并把最近投稿显示在 CLI，不修改 watcher.db，也不会创建下载任务。
+
+常用参数：
+- `--limit 50`：显示最近 50 个投稿，默认也是 50；
+- `--max-pages N`：临时限制最多请求多少页。
+
+如果准备直接纳入该作者全部投稿，可以不运行 preview-creator，直接进入 init-creator。
+
+
+### 5. init-creator：为真正新增的 UP 确定扫描基线
+
+新增 UP 必须初始化一次，决定第一次 scan 从作者历史投稿的什么位置开始接管。
+
+a. 纳入该作者全部可见投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --all
+
+b. 不写模式时，当前版本也默认 ALL：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称"
+
+c. 包含指定 BVID，并纳入它及之后更晚的投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --from-bvid BVxxxxxxxxxx
+
+d. 不包含指定 BVID，只纳入它之后更晚的投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --after-bvid BVxxxxxxxxxx
+
+如果不知道该选哪个 BVID，先使用上一节的 preview-creator 查看最近投稿。
+
+【不要给已经正常运行的旧作者随意重新 init】
+
+对已有作者重新 init 会重新设置扫描基线，并清空最近 scan 时间。
+下一次 scan 会把这个作者重新按“首次扫描”处理。
+
+- 如果重新设为 ALL，会重新扫描该作者全部可见历史投稿；
+- watcher.db 已经认识、并且已有完成任务的投稿，不会因此重新建立下载任务；
+- 如果新的基线比原基线更早，过去从未进入 watcher.db 的旧投稿会被当成新记录写入，并生成 PENDING 下载任务。
+
+所以作者改名只处理名称/目录，不要通过重新 init 来解决。
+
+
+## 【第三步（scan 检查 UP 更新）】
+
+日常增量更新从这里开始。
+
+
+### 1. scan 常用命令
+
+scan 是日常最常用的命令之一，主要用法集中如下。参数可以按需要组合。
+
+a. 扫描全部已初始化 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan
+
+b. 扫描全部 UP，并在 CLI 显示所有新增投稿标题【日常推荐】：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --details
+
+c. 只扫描指定 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主名称"
+
+d. 扫描多个指定 UP，并显示新增标题：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主A" --creator "UP主B" --details
+
+e. scan 完成后，同时复查本轮作者已有的充电试看/访问受限投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --refresh-access
+
+f. 本轮不更新各 UP 的【历史上传记录.txt】：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --no-history
+
+g. 临时限制每个 UP 最多扫描页数，例如最多 3 页：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --max-pages 3
+
+例如只扫描某个 UP、显示标题并复查权限，也可以组合：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主名称" --details --refresh-access
+
+
+### 2. scan 实际做什么
+
+scan 会读取 watcher.db 中已经登记并完成初始化的作者，然后访问 B站投稿列表，根据作者基线、数据库已有 BVID 和最近成功 scan 的重叠范围判断新增投稿。
+
+新增投稿会写入 watcher.db，并建立 PENDING 下载任务。
+
+因此：
+- 新建了作者文件夹但没有 sync/init，本轮 scan 看不到这个新作者；
+- scan 只建立任务，不直接下载视频；
+- 多轮 scan 可以累积多个 PENDING，之后再统一 download。
+
+
+### 3. CLI 重点看什么
+
+正常汇总大致会出现：
+
+扫描 ID：N
+成功 UP：...
+账号/空间不可用：...
+失败 UP：...
+新增投稿：...
+报告：...
+yt-dlp 队列：...
+
+重点看：
+
+【失败 UP】
+不能把扫描失败误认为“这个作者没有新投稿”。如果失败 UP 不为 0，应先看具体错误。
+
+【新增投稿】
+数量应和预期大致相符。如果突然出现大量旧视频，先检查是不是某个作者的初始化基线被重新设置。
+
+【账号/空间不可用】
+表示本轮无法可靠读取作者空间。历史数据库不会因此自动删除作者或投稿。
+
+【新增标题】
+使用 `--details` 时直接检查 UP、标题和 BVID，有明显异常时先不要急着 download。
+
+
+### 4. scan 报告在哪里
+
+每轮 scan 会在：
+
+D:\Program files\Telethon\bili_archive\reports\watcher\
+
+生成类似：
+
+scan_report_时间_idN.txt
+scan_result_时间_idN.json
+yt-dlp_batch_时间_idN.txt
+
+作用：
+- scan_report：人类可读的扫描结果；
+- scan_result：机器可读的完整扫描结果；
+- yt-dlp_batch：带 UP/标题注释和投稿 URL 的列表，也方便人工复制 URL。
+
+日常主要看 CLI 和 scan_report；需要手工下载时可以从 yt-dlp_batch 或失败报告复制 B站 URL。
+
+
+### 5. 普通 scan 默认不复查全部历史充电视频
+
+当前版本为了减少扫描结束后的额外等待，普通 scan 默认只处理投稿增量。
+
+如果明确要同时复查本轮作者已有充电试看/访问受限投稿：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --refresh-access
+
+更常见的是单独对需要的作者或 BVID 使用 refresh-access，见后面的【充电权限变化】。
+
+
+## 【第四步（download 自动下载）】
+
+scan 有新增投稿后，再运行 download。
+
+
+### 1. download 常用命令
+
+download 的主要用法集中如下。后面的 FAILED、画质、并发等章节会再解释对应场景。
+
+a. 不加筛选参数：默认下载全部 PENDING
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download
+
+b. 明确写出下载全部 PENDING【日常推荐】
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending
+
+c. 下载全部 PENDING，并跳过输入 DOWNLOAD 的确认步骤
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --yes
+
+d. 只下载某次 scan 首次发现的任务，例如 scan ID 为 12
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --scan-id 12
+
+e. 只下载指定 BVID
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --bvid BVxxxxxxxxxx
+
+f. 一次指定多个 BVID
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --bvid BVxxxxxxxxxx --bvid BVyyyyyyyyyy
+
+g. 重试 FAILED 和 DownKyi 待补救任务
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --retry-failed
+
+h. 临时指定画质上限
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --quality 1080p
+
+允许：best / 1080p / 720p / 480p / 360p
+
+i. 临时改变同时下载的投稿数，例如 3
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --workers 3
+
+
+### 2. 开始下载前的确认
+
+download 开始前会先列出本次选中的任务，并要求输入：
+
+DOWNLOAD
+
+先确认任务数量和 BVID/标题是否合理，再继续。
+
+`--yes` 只用于跳过这个确认步骤，不会改变下载范围或错误处理方式。
+
+
+### 3. 画质选择
+
+允许：best / 1080p / 720p / 480p / 360p
+
+例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --quality best
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --quality 720p
+
+不写 `--quality` 时读取 watcher_config.json 中的 download_quality。
+
+
+### 4. 临时调整同时下载数量
+
+当前项目通常使用：
+
+download_workers = 2
+concurrent_fragments = 2
+
+CLI 的 `--workers` 只临时覆盖同时处理的投稿数，例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --workers 3
+
+`concurrent_fragments` 需要在 watcher_config.json 中调整。
+
+历史使用经验：
+- 稳妥：workers 2 / fragments 2
+- 平衡：workers 3 / fragments 3
+- 偏快：workers 4 / fragments 4
+
+如果出现 B站风控、频繁 412/-352、网络不稳定，应优先降回 1～2。
+并发不是越高越快；aria2 自身还有单媒体流连接数，属于另一层参数。
+
+
+### 5. 下载过程中会经历什么
+
+正常流程大致是：
+
+PENDING
+→ 检查当前访问权限
+→ F:\新建文件夹\b站视频-temp\BVID\current 下载
+→ 识别单 P / 多 P
+→ 下载视频、封面、info.json 等
+→ FFprobe / 时长 / 音视频时间轴等验收
+→ 必要时自动恢复、重新混流、重封装或转码
+→ 生成 source.json
+→ 移动到 F:\新建文件夹\b站视频\UP\投稿标题\
+→ 状态变成 STAGED
+
+DownKyi 成功导入的任务最终状态为 IMPORTED_DOWNKYI。
+
+
+### 6. CLI 重点看什么
+
+下载中一般会显示：
+
+UP / 标题 / BVID / P
+百分比
+速度
+ETA
+已下载 / 总量
+
+下载到 100% 后还可能继续做 FFmpeg 合并、媒体验收、图片和 source.json 整理。
+因此【100% 不等于已经 STAGED】。
+
+真正成功要看到任务完成并整理到正式目录。
+
+如果中途出现：
+- FAILED：普通自动下载失败；
+- MANUAL_FALLBACK_PENDING：自动补救已经耗尽，适合考虑 DownKyi；
+- ACCESS_RESTRICTED：当前账号没有可用完整内容/试看证据；
+- SOURCE_UNAVAILABLE：已经人工确认原来源失效；
+- SKIPPED：人工决定不再自动尝试；
+
+不要把这些状态都当成普通网络失败反复重试。
+
+
+## 【第五步（status 检查本轮结果）】
+
+### 1. status 常用命令
+
+a. 查看全部 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status
+
+b. 只查看指定 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status --creator "UP主名称"
+
+c. 查看一个 BVID 的投稿、权限和下载任务：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status --bvid BVxxxxxxxxxx
+
+
+### 2. 全局 status 怎么看
+
+典型形式：
+
+UP主A｜UID 123456｜READY｜账号 ACCESSIBLE｜模式 CUTOFF｜投稿 10｜待下载 0｜失败 0｜访问受限 0｜来源失效 0｜手动跳过 0｜DownKyi待补救 0｜已整理 10
+  访问类型：正常 8｜充电完整版 0｜充电试看 1｜充电受限 0｜未知 1
+
+日常重点看：
+
+【待下载】
+本轮准备处理完时通常应为 0。非 0 说明还有 PENDING。
+
+【失败】
+FAILED 项。可以先 retry，必要时看日志或转人工处理。
+
+【DownKyi待补救】
+表示自动下载多次失败，适合使用 DownKyi。
+
+【访问受限】
+不一定是程序故障。可能是当前账号没有充电完整版，也没有可下载试看证据。
+
+【来源失效 / 手动跳过】
+这是已经明确处理的人工状态，可以合法非 0，不需要为了“全部归零”强行恢复。
+
+【已整理】
+STAGED + IMPORTED_DOWNKYI，即本地正式目录已经准备好的投稿。
+
+注意：“投稿 N”是 watcher.db 当前纳入管理范围的投稿数量，不等于这个 UP 在 B站的历史总投稿数。
+
+
+### 3. 单 BVID 状态适合排查
+
+`status --bvid BVxxxxxxxxxx` 适合继续确认：
+- 当前任务状态；
+- 访问类型；
+- 来源状态；
+- 临时目录；
+- 正式目录；
+- 最近错误和日志。
+
+
+## 【第六步（FAILED：自动下载失败）】
+
+如果 status 中出现 FAILED，先判断是不是短暂网络/yt-dlp/CDN 问题。
+
+
+### 1. 先重试 FAILED
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --retry-failed
+
+`--retry-failed` 会把 FAILED 和 DownKyi 待补救任务一起纳入重试。
+
+Watcher 不只是机械重新执行同一命令。根据失败阶段，它可以继续利用可信断点、重新解析临时 URL、降低 aria2 连接、切换下载后端，或者只重新处理坏掉的媒体流。
+
+如果只是临时网络错误，优先让程序自动恢复，不要先手工删除 b站视频-temp 中的 `.part` / `.aria2`。
+
+
+### 2. 查看失败报告和日志
+
+主要位置：
+
+D:\Program files\Telethon\bili_archive\reports\watcher\download_failures_*.txt
+
+D:\Program files\Telethon\bili_archive\reports\watcher\download_logs\
+
+失败报告适合快速找：
+- UP；
+- 标题；
+- BVID / URL；
+- 最终错误；
+- 当前是否已进入 DownKyi 待补救。
+
+单任务日志适合继续判断：
+- yt-dlp 原始错误；
+- HTTP/网络错误；
+- Cookie/权限错误；
+- aria2/fragment 重试；
+- FFmpeg/合并错误；
+- 媒体验收失败；
+- Watcher 自动恢复到第几轮。
+
+如果连续重试仍失败，再根据下面的异常类型处理。
+
+
+## 【第七步（DownKyi 人工补救）】
+
+当任务进入 MANUAL_FALLBACK_PENDING，或者 yt-dlp 连续失败而 DownKyi 可以正常取得视频时，使用本节。
+
+
+### 1. 用 DownKyi 下载失败视频
+
+从 download_failures、yt-dlp_batch 或 B站页面复制投稿 URL，在 DownKyi 中下载。
+
+可以把多个不同 UP 的失败视频放在同一个 Media 文件夹中。
+
+
+### 2. 先预览导入
+
+当前 DownKyi Media：
+
+E:\Program_file\DownKyi-1.0.24-1.win-x64\Media
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" import-downkyi --media-dir "E:\Program_file\DownKyi-1.0.24-1.win-x64\Media"
+
+不加 `--apply` 不会移动文件。
+
+重点确认 CLI 中：
+- UP；
+- 标题；
+- BVID；
+- 候选目录；
+- 匹配是否唯一；
+- 最终计划是导入哪一项。
+
+程序不会因为标题“看起来差不多”就强行匹配。没有明确匹配的内容会留在 Media。
+
+
+### 3. 正式导入
+
+确认预览正确后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" import-downkyi --media-dir "E:\Program_file\DownKyi-1.0.24-1.win-x64\Media" --apply
+
+成功后会进行媒体验收、整理正式目录、生成 source.json，并把任务记为 IMPORTED_DOWNKYI。
+
+默认是移动还是复制由 watcher_config.json 的 DownKyi 配置决定。
+
+
+### 4. 再次 status
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status
+
+确认 DownKyi 待补救数量减少或归零。
+
+
+## 【第八步（已经下载成功，但后来发现视频异常）】
+
+这条分支专门处理：
+
+【Watcher 已经认为下载成功，任务是 STAGED / IMPORTED_DOWNKYI，但正式视频后来播放异常，或者 audit-media 检查出损坏。】
+
+它和普通 FAILED 不一样：
+
+FAILED
+→ 当前下载任务本来就没有成功完成
+→ 直接 retry 或 DownKyi
+
+STAGED / IMPORTED_DOWNKYI，但媒体异常
+→ audit-media 确认问题
+→ repair-media 隔离异常正式目录
+→ watcher 任务重置为 PENDING
+→ 再次 download
+
+
+### 1. audit-media：先确认正式视频是否异常
+
+a. 检查全部正式视频：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media
+
+b. 只检查指定 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --creator "UP主名称"
+
+c. 只检查指定 BVID：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --bvid BVxxxxxxxxxx
+
+d. 增加开头/中间/结尾的抽样解码检查：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --bvid BVxxxxxxxxxx --deep
+
+audit-media 只读，不会移动正式视频，也不会修改下载状态。
+
+
+### 2. repair-media：隔离异常成品并重新排队
+
+当 audit-media 已经确认某个 STAGED / IMPORTED_DOWNKYI 成品异常，需要重新下载时使用。
+
+a. 指定 BVID，只读预览将如何处理：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --bvid BVxxxxxxxxxx
+
+b. 指定 BVID，正式执行：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --bvid BVxxxxxxxxxx --apply
+
+c. 只处理指定 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --creator "UP主名称"
+
+d. 允许处理本次扫描发现的全部异常项：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --all-invalid
+
+正式处理全部异常项时再加：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --all-invalid --apply
+
+`repair-media` 正式执行后会：
+- 把原正式投稿目录移到【F:\新建文件夹\b站视频-watcher-quarantine】；
+- 如果存在旧下载缓存，也把不再可信的 attempt 隔离；
+- 把该任务重置为 PENDING，并清掉旧失败次数/下载器/临时路径等下载状态；
+- 不会直接重新下载。
+
+因此 repair 完以后还需要再次运行：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending
+
+重新下载完成后，再用 status 或 audit-media 确认已经恢复正常。
+
+
+## 【第九步（充电专属 / 权限变化）】
+
+Watcher 当前会区分：
+
+NORMAL：普通投稿
+UPOWER_FULL：当前账号可以取得充电完整版
+UPOWER_PREVIEW：B站明确提供试看内容
+ACCESS_RESTRICTED：当前没有完整权限，也没有可安全确认的可下载试看
+
+普通 scan 默认不反复遍历历史充电投稿。
+
+
+### 1. 以后获得充电权限，重新检查某个作者
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --creator "UP主名称"
+
+
+### 2. 只检查指定 BVID
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --bvid BVxxxxxxxxxx
+
+权限状态变化后，原本因为权限受限而无法下载的任务可能重新回到可下载状态，再用 status 确认后运行 download。
+
+注意：
+充电专属并不等于一定存在试看。只有接口明确提供试看证据时，脚本才按 UPOWER_PREVIEW 处理。
+
+
+## 【第十步（不再下载 / 原投稿已删除）】
+
+这两个情况不要混用。
+
+
+### 1. 人工决定不再下载：SKIPPED
+
+例如某视频不需要归档、无法补救后决定放弃：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" skip-download --bvid BVxxxxxxxxxx --reason "人工决定跳过" --apply
+
+进入 SKIPPED 后，普通 download 和 retry 不会偷偷重新激活。
+
+以后又想下载：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unskip-download --bvid BVxxxxxxxxxx --apply
+
+恢复为 PENDING 后再 download。
+
+
+### 2. 已确认 B站原投稿删除/失效：SOURCE_UNAVAILABLE
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" mark-source-unavailable --bvid BVxxxxxxxxxx --reason "原投稿已删除" --apply
+
+对于尚未完成的任务，它会停止后续自动下载。
+如果这个 BVID 以前已经 STAGED / IMPORTED_DOWNKYI，只记录“现在来源失效”，不会破坏已经保存好的本地成品。
+
+如果后来确认原来源恢复，或者之前判断错误：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unmark-source-unavailable --bvid BVxxxxxxxxxx --apply
+
+未完成的 SOURCE_UNAVAILABLE 会恢复为 PENDING。
+
+
+## 【第十一步（中断下载和恢复）】
+
+下载过程中可以按一次：
+
+Ctrl + C
+
+当前 Watcher 会尝试停止 yt-dlp / aria2 等下载子进程，并保留仍可信的 current 断点。
+
+不要在 Ctrl+C 后立刻连续多次强制关闭窗口。
+
+中断后建议：
+
+1. 确认命令行已经退出；
+2. 如果怀疑仍有下载进程，再看任务管理器；
+3. 运行 status；
+4. PENDING 继续：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending
+
+5. FAILED 重试：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --retry-failed
+
+【不要为了恢复下载清空 F:\新建文件夹\b站视频-temp】
+current 中的 `.part`、`.aria2` 等可能正是下一次续传需要的断点。
+
+
+## 【第十二步（B站风控、网络和低频异常）】
+
+### 1. HTTP 412 / code -352 / rate limit
+
+出现类似：
+
+HTTP 412
+code -352
+rate limit
+exceeded the rate limit
+
+一般先按 B站风控/请求过快处理。
+
+建议：
+
+1. 停止立即反复 scan/download；
+2. 先等待 15～30 分钟；
+3. 再次触发时延长到 1～2 小时；
+4. 把 download_workers 降为 1～2；
+5. 把 concurrent_fragments 降为 1～2；
+6. 必要时把 scan 请求间隔调回稳妥档；
+7. 检查 Cookie 和 yt-dlp 是否正常。
+
+不要因为一次风控就连续高频重试。
+
+
+### 2. 下载提示 “You might want to try a VPN or a proxy server”
+
+这是历史上出现过的 yt-dlp 网络/地区/连接类提示。
+
+先判断：
+- 当前网页在浏览器中能否正常打开；
+- Cookie 是否有效；
+- 是否只是某个 CDN/网络出口暂时异常；
+- 更新 yt-dlp 后是否恢复。
+
+如果其他投稿都正常，优先把它当成单视频/临时网络问题，不要直接修改 watcher.db。
+可以稍后 retry；长期只对某个视频失败时再考虑 DownKyi。
+
+
+### 3. 下载速度明显变慢
+
+先区分：
+
+【真的在下载很慢】
+看 CLI 的速度和 ETA，可以检查网络、aria2、并发和 B站 CDN。
+
+【已经下载到 100%，但后处理很慢】
+可能正在 FFmpeg 合并、深度验收、remux 或 transcode。
+这时提高 download_workers/aria2 并不能让当前转码变快。
+
+历史调优档：
+
+scan 请求间隔：
+- 稳妥：0.8～1.5 s
+- 平衡：0.4～0.9 s
+- 偏快：0.2～0.5 s，不建议风控频繁时长期使用
+
+download：
+- 稳妥：workers 2 / fragments 2
+- 平衡：workers 3 / fragments 3
+- 偏快：workers 4 / fragments 4
+
+如果下载量不大，优先保持稳妥档，没必要为了几十秒差距提高风控概率。
+
+
+## 【第十三步（进入 Telegram 上传流程）】
+
+当本轮需要处理的投稿已经：
+- STAGED；
+- IMPORTED_DOWNKYI；
+- 或者明确进入 SKIPPED / SOURCE_UNAVAILABLE / ACCESS_RESTRICTED 等可接受状态；
+
+并且 status 中没有你准备继续处理的 PENDING / FAILED / MANUAL_FALLBACK_PENDING 后，就可以进入上传流程。
+
+运行 Archive 扫描：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan
+
+之后按照【b站视频批量上传流程.txt】继续：
+- inspect-plan；
+- run；
+- verify-batch；
+- Cleanup。
+
+注意：
+
+【Watcher 已整理 ≠ Telegram 已上传】
+
+Watcher 只负责把本地正式媒体准备好。
+Telegram 是否已经上传、是否已经核验，以 archive.db 和 Archive 的 verify 结果为准。
+
+
+## 【第十四步（报告、临时文件和删除）】
+
+这部分只给日常使用时的轻量判断。全项目文件的具体作用、保留数量和 Cleanup 规则见【项目文件与产物清理说明.txt】和【bili_cleanup脚本使用指南.txt】。
+
+当前不建议再根据旧版 `scan_result.json + source.json` 自己批量判断正式视频是否可以删除。
+【正式投稿目录是否安全删除，以 Archive 上传完成并 VERIFIED 为权威边界。】
+
+
+### 1. 一般可以清理的 Watcher 产物
+
+【终态任务的临时 BVID 目录】
+当任务已经是：
+
+STAGED / IMPORTED_DOWNKYI / SKIPPED / ACCESS_RESTRICTED / SOURCE_UNAVAILABLE
+
+对应的：
+
+F:\新建文件夹\b站视频-temp\BVID\
+
+已经不再作为续传来源，可以清理。
+空的 BVID 文件夹也可以删除。
+
+【failed_attempts】
+F:\新建文件夹\b站视频-temp\BVID\failed_attempts\
+
+这里保存的是已经确认不可信、不会再用于断点续传的旧 attempt，可以清理。
+
+【Watcher 日常报告】
+主要位于：
+
+D:\Program files\Telethon\bili_archive\reports\watcher\
+
+例如：
+- scan_report_*.txt
+- scan_result_*.json
+- yt-dlp_batch_*.txt
+- download_failures_*.txt
+- download_logs\
+- downkyi_import_*.json
+- media_audit_*
+- media_repair_*
+- creator_reconcile_*.json
+
+这些属于运行记录，不是 watcher.db 的替代品。
+当前 Cleanup 会按类别保留最近若干份；下载日志对活跃任务保留最近记录，终态任务的旧日志可以清理。
+
+如果准备手工删除，建议至少等本轮下载、上传和 verify 都结束以后再处理，避免排错时缺少记录。
+
+【Watcher quarantine】
+F:\新建文件夹\b站视频-watcher-quarantine\
+
+这里是 repair-media 已确认异常后隔离的旧正式目录。
+确认新的 PENDING 已经重新下载成功、旧异常文件不再需要人工检查后，可以清理；当前 Cleanup 也会把这里列入可清理对象。
+
+
+### 2. 暂时不要删除的内容
+
+【活跃下载缓存】
+
+如果任务仍是：
+
+PENDING / FAILED / MANUAL_FALLBACK_PENDING
+
+不要清理：
+
+F:\新建文件夹\b站视频-temp\BVID\current\
+
+其中 `.part`、`.aria2`、已经正常下载的单独音频/视频流等可能仍用于下一轮断点续传或定向恢复。
+
+【正式视频目录】
+
+F:\新建文件夹\b站视频\UP主\投稿标题\
+
+即使 Watcher 已经 STAGED，也只代表本地下载完成。
+在 Archive 上传并 verify 之前，不要因为 Watcher 状态正常就删除正式视频。
+
+【数据库和配置】
+
+不要删除：
+- D:\Program files\Telethon\bili_archive\data\watcher.db
+- D:\Program files\Telethon\bili_archive\data\archive.db
+- config\watcher_config.json
+- B站 Cookie
+- Telethon session
+- scripts 下当前脚本
+- 各 UP 的【新建文本文档.txt】
+
+【历史上传记录.txt】和【作者名单.txt】体积很小，建议保留；前者后续 scan 可以重新生成，但没有必要作为日常清理对象。
+
+
+### 3. 推荐使用 Cleanup 统一清理
+
+完成 Archive 上传和 verify 后，优先使用 bili_cleanup.py 做全项目审计，而不是手工逐个目录判断。
+
+Cleanup 当前会：
+- 保留 PENDING / FAILED / MANUAL_FALLBACK_PENDING 的 current 断点；
+- 清理已经隔离的 failed_attempts；
+- 清理终态任务的 incoming 缓存；
+- 按保留数裁剪 Watcher 日常报告；
+- 清理 Watcher quarantine；
+- 只有 Archive 中投稿已经 COMPLETED，而且对应 batch member 已 VERIFIED，才允许自动删除正式投稿目录。
+
+具体 audit / inspect / clean 命令放在上传/删除流程和 Cleanup 使用指南中，本下载流程不重复展开。
+
+
+## 【推荐的日常 / 每月操作顺序】
+
+普通已有 UP：
+
+1. scan --details
+2. 看失败 UP、新增投稿和标题
+3. download --pending
+4. status
+5. FAILED：download --retry-failed
+6. 仍失败：DownKyi / skip / source-unavailable / 权限处理
+7. 必要时再次 status
+8. bili_archive.py scan
+9. 按上传流程 inspect-plan → run → verify-batch
+10. Cleanup
+
+
+有新增 UP：
+
+1. 建 UP 文件夹 + 新建文本文档.txt
+2. sync-creators
+3. 如有改名候选：reconcile-creators → --apply
+4. preview-creator（需要查看投稿、选择 BVID 基线时）
+5. init-creator（真正新增 UP 才运行）
+6. scan --details
+7. download --pending
+8. status
+9. 异常处理
+10. 进入 Archive
+
+
+配置/Cookie 有变化：
+
+1. check-config
+2. check-login
+3. 正常后再 scan
+
+
+## 【常见状态快速处理】
+
+PENDING
+→ download --pending
+
+FAILED
+→ 先 download --retry-failed
+→ 仍失败再看日志 / DownKyi
+
+MANUAL_FALLBACK_PENDING
+→ DownKyi + import-downkyi
+
+ACCESS_RESTRICTED
+→ 当前权限不足；以后权限变化时 refresh-access
+
+SKIPPED
+→ 人工决定不再下载；需要恢复时 unskip-download
+
+SOURCE_UNAVAILABLE
+→ 已确认原投稿失效；来源恢复时 unmark-source-unavailable
+
+STAGED
+→ yt-dlp 路线已整理到正式目录
+
+IMPORTED_DOWNKYI
+→ DownKyi 路线已整理到正式目录
+
+正式媒体异常
+→ audit-media → repair-media → download
+
+
+## 【不属于日常下载流程、但仍保留的命令】
+
+以下命令没有删除，只是通常不需要放进每次下载流水线：
+
+- list-uninitialized：检查还有哪些新增 UP 尚未 init；
+- fix-import-names：修复旧版 DownKyi 导入留下的历史文件名；
+- notify-test：测试 Windows 完成/失败提醒；
+- --no-exit-notify：临时关闭退出提醒；
+- --no-input / --project-root / --config：特殊启动环境使用。
+
+这些命令的参数、历史用途和完整 CLI 见【bili_watcher脚本使用指南.txt】。

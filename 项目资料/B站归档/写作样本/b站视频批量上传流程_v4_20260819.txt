@@ -1,0 +1,1445 @@
+﻿B站视频批量上传流程
+===================
+
+当前 Archive：bili_archive.py 0.10.2-early-interrupt-recovery
+archive.db：Schema v6
+plan：Schema v5
+正式视频目录：F:\新建文件夹\b站视频
+项目目录：D:\Program files\Telethon\bili_archive
+
+
+【日常主流程】
+
+Watcher 已经把本轮需要归档的视频整理到正式目录后：
+
+scan
+→ inspect-plan
+→ run
+→ verify-batch
+→ 必要时检查/修复 General 导航
+→ Cleanup audit / inspect / clean
+
+如果 run 中断或 verify-batch 发现问题，不要重新建立新 batch。
+先按后面的【中断上传和恢复】或【异常 item 修复】处理原 batch。
+
+
+## 【第一步（进入 Archive 前先确认 Watcher 已经收尾）】
+
+正常进入上传阶段前，Watcher 中本轮准备处理的投稿应已经成为：
+
+STAGED
+或
+IMPORTED_DOWNKYI
+
+如果仍有你准备继续处理的：
+
+PENDING
+FAILED
+MANUAL_FALLBACK_PENDING
+
+先回【B站视频批量下载流程.txt】完成下载或异常处理，再进入 Archive。
+
+SKIPPED / SOURCE_UNAVAILABLE / ACCESS_RESTRICTED 属于 Watcher 自己的人工终态或权限状态，不代表 Telegram 已经归档。
+Archive 是否已经上传、是否通过远端核验，以 archive.db 中对应 run/batch 的归档记录和必要的远端 verify 结果为准。
+
+
+## 【第二步（首次使用、配置变化或新增 Telegram 群组时）】
+
+已经长期正常运行、配置和 target 都没有变化时，可以直接进入【第三步 scan】。
+
+
+### 1. check-config：检查 Archive 本地配置
+
+作用：
+检查 bili_config.json、正式视频目录、Session、数据库目录和相关依赖是否能正常使用，不连接 Telegram。
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" check-config
+
+正常时再继续后续步骤。
+
+如果配置、Session 路径或正式视频目录有错误，先处理，不要直接 run。
+
+
+### 2. check-target：检查 legacy target
+
+作用：
+按 bili_config.json 中的 legacy target 配置连接 Telegram，检查群类型、Forum 和权限。
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" check-target
+
+当前项目已经支持多个 target，所以新增群组时主要使用后面的 `target-check --key`。
+`check-target` 主要用于首次配置和 legacy target 检查。
+
+
+### 3. init-db：整个项目第一次建立 archive.db
+
+作用：
+创建或验证 archive.db。
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" init-db
+
+已有生产数据库时不要为了“重新扫描”重建 archive.db。
+archive.db 保存历史 topic、message_id、版本、run、batch、verify 和 target 路由；新建一个空数据库不能恢复这些历史关系。
+
+【如果生产 archive.db 丢失或损坏】
+
+不要先 init-db 建空库继续上传。
+
+正确顺序：
+
+1. 停止所有 Archive 写入任务；
+2. 从：
+
+D:\Program files\Telethon\bili_archive\backups\db\
+
+选择正确时间点的 SQLite 快照；
+3. 使用 restore-db 恢复：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" restore-db "D:\Program files\Telethon\bili_archive\backups\db\archive_时间_标签.db"
+
+4. 恢复后先检查：
+
+status
+target-list
+batch-status --latest
+
+5. 如果恢复时间点早于后来已经完成的上传，必要时再用 verify 精确核对对应历史 run；
+6. 确认数据库时间点和 Telegram 远端关系正确后再继续 scan/run。
+
+restore-db 会在覆盖前先备份当前数据库；详细恢复原理见 Archive 脚本使用指南。
+
+
+### 4. 新增 Telegram target【只有容量不足或主动增加群组时】
+
+每个新 target 默认容量为【50 个作者】。
+
+Archive 不会自动创建 Telegram 群。
+先在 Telegram 手工创建新的私密 Forum 超级群组，再执行下面的步骤。
+
+a. 找到新群的 chat_id：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-discover
+
+名称很多时可以筛选：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-discover --name "B站"
+
+b. 预览登记新 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-add --key bili_002 --chat-id -1001234567890 --capacity 50
+
+其中：
+- `bili_002`：自己给这个 target 取的业务 key；
+- `chat_id`：由 target-discover 查到的真实 Telegram 群 ID；
+- `capacity`：默认 50；
+- `target_id`：archive.db 写入时自动生成，不需要手工编号。
+
+c. 确认后正式写入：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-add --key bili_002 --chat-id -1001234567890 --capacity 50 --apply
+
+d. 检查新 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-check --key bili_002
+
+查看当前所有 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" target-list
+
+历史作者不会因为增加新 target 自动迁移。
+新 target 主要用于后续新作者路由。
+
+
+## 【第三步（scan：扫描本地正式视频并生成 plan）】
+
+scan 是上传前的本地检查阶段。
+
+它会：
+- 扫描 F:\新建文件夹\b站视频；
+- 识别作者 UID、投稿目录、MP4 和图片；
+- 检查媒体是否可读；
+- 和 archive.db 对比 NEW / EXISTING / VERSION_UPDATE；
+- 读取 source.json 中的 BVID/page；
+- 判断本轮每个作者是否需要 ZIP；
+- 检查新作者 target 容量；
+- 更新媒体验证缓存；
+- 默认生成 plan 和 scan_events 报告。
+
+scan 不会向 Telegram 发送消息，也不会修改正式视频源文件。
+
+
+### 1. scan 常用命令
+
+a. 普通扫描【日常使用】：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan
+
+b. 在 CLI 中显示全部 warning：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --details
+
+c. 只显示阻断错误：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --errors-only
+
+d. 限制每种 warning 在 CLI 中最多显示 20 条：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --warning-limit 20
+
+e. 怀疑“同大小视频内容已经被替换”时做深度比较：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --deep-compare-existing
+
+f. 怀疑媒体缓存不可信时，忽略缓存重新验证全部媒体：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --validate-all-media
+
+g. 本轮强制生成 ZIP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --zip always
+
+h. 本轮禁用 ZIP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --zip never
+
+i. 只看扫描结果、不生成 plan：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --no-plan --details
+
+
+### 2. scan CLI 重点看什么
+
+【阻断错误】
+
+只有阻断错误为 0、plan 为 `can_upload=true`，才能进入 run。
+
+常见阻断包括：
+- 新投稿没有可用媒体；
+- 同一个 UID 在本地同时出现旧名/新名两个作者目录；
+- 新作者超过所有 ACTIVE target 的剩余容量；
+- 历史未完成 item 的源文件发生冲突；
+- 当前媒体结构无法安全执行。
+
+出现阻断时先解决原因，再重新 scan。
+
+
+【新增 / 更新数量】
+
+确认本轮新增和版本更新数量符合预期。
+
+如果突然出现大量 VERSION_UPDATE，不要直接 run。
+先检查是不是：
+- 视频被批量重新下载；
+- 修复/转码后文件发生变化；
+- 同大小文件被替换。
+
+必要时重新运行：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" scan --deep-compare-existing --details
+
+
+【Warning】
+
+Warning 不一定阻止上传，例如：
+- 可选图片缺失或损坏；
+- 多 MP4 配对歧义；
+- 历史 source.json/BVID 缺失；
+- 视频损坏后只剩有效图片可以降级上传。
+
+不要把所有 Warning 都当成错误，也不要完全不看。
+如果 warning 会改变实际上传内容，例如“只发图片、不发视频”，应先确认你是否接受。
+
+
+【ZIP】
+
+动态 ZIP 按每个作者本轮新增视频单独计算。
+
+auto 默认需要三个条件同时满足：
+- 主视频至少 6 个；
+- 使用 ZIP 后至少减少 4 次下载；
+- 减少比例至少 65%。
+
+所以老作者只新增一两条视频时没有 ZIP 是正常的，不代表漏上传。
+
+
+【target】
+
+历史作者继续使用原 target。
+新作者如果没有容量，scan 会阻断，并提示需要增加 target；默认每个新 target 容量 50。
+
+不要为了给新作者腾位置把历史作者迁移到新群。
+
+
+【plan 路径】
+
+scan 成功后会输出类似：
+
+D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json
+
+后面的 inspect-plan/run 都使用这一份 plan。
+
+本轮 batch 一旦建立，不要移动、重命名或手工编辑它。
+
+
+### 3. scan 产物
+
+主要位置：
+
+D:\Program files\Telethon\bili_archive\plans\
+└─ plan_*.json
+
+D:\Program files\Telethon\bili_archive\reports\
+└─ scan_events_*.txt
+
+D:\Program files\Telethon\bili_archive\cache\
+└─ media_validation_cache.sqlite3
+
+- plan：这次 scan 的静态上传快照，run/resume 需要；
+- scan_events：本轮阻断和 warning 的人类可读记录；
+- media_validation_cache：媒体检查缓存，可以重建。
+
+
+## 【第四步（inspect-plan：上传前检查 plan）】
+
+作用：
+在连接 Telegram 前查看这次 plan 到底准备处理哪些作者、多少视频、多少 ZIP、总体积以及 target。
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" inspect-plan "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json"
+
+只看某个 UP：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" inspect-plan "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称"
+
+
+### CLI 重点看
+
+- 哪些 UP 当前可执行；
+- 每个 UP 的视频数量；
+- ZIP 数量；
+- 总体积；
+- target；
+- 是否有 blocked；
+- 是否已经在同一 plan 中完成。
+
+如果出现：
+
+【已在同一 plan 中完成】
+不是错误，说明 archive.db 已经记录这个作者在该 plan 下完成过。
+
+【blocked / 为什么这个作者不能执行】
+使用：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" creator-status "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称"
+
+creator-status 专门用于解释该作者为什么 READY、已经完成、被活动 batch 锁定、没有新增或存在其他阻断。
+
+
+### prepare-plan【低频维护 / 路由预固定命令】（可跳过）
+
+作用：
+在真正上传前，提前把 plan 中新作者的 UID → target 路由写入 archive.db。
+
+先预览：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" prepare-plan "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json"
+
+正式写入：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" prepare-plan "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --apply
+
+这个命令最初是在多 target 开发阶段用于预先验证、固定新作者路由。
+后来这部分功能已经整合进 pilot/run：正常 run 会在写 Telegram 前重新验证并固定必要路由。
+
+因此当前日常主流程通常不需要每次执行 prepare-plan：
+
+scan
+→ inspect-plan
+→ run
+
+只有想提前固定新作者路由、测试多 target 或排查容量/迁移问题时再用。
+
+
+## 【第五步（想先试一个作者时，优先用单作者正式 run）】
+
+当前项目已经形成：
+
+持久 batch
+→ verify-batch
+→ Cleanup VERIFIED
+
+这一整套正式安全链。
+
+因此，如果你的目的只是：
+- 第一次部署后先上传一个小作者；
+- 新增 target 后先测试新群；
+- Archive 大版本升级后先验证一次；
+- 想先确认 topic、ZIP、媒体和 General 是否正常；
+
+【优先使用单作者正式 run，而不是独立 pilot。】
+
+例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称" --order selected
+
+这仍然只上传一个作者，但从一开始就会创建持久 batch。
+
+完成后：
+
+verify-batch --batch-id N
+→ Cleanup
+
+测试作者本身也处于正式 batch 生命周期中。
+
+如果试跑结果正常，继续用同一 plan 运行后面的作者即可；同一 plan 下已经 COMPLETED 的试跑作者会被自动跳过，不会重复上传。
+
+
+### 独立 pilot【低频兼容 / 开发测试命令】
+
+pilot 是项目早期留下的单作者真实试点机制。
+
+它仍然是当前 0.10.2 正式支持的命令，也会真的上传：
+- topic；
+- 主页信息；
+- TXT；
+- ZIP；
+- 标题；
+- 视频/图片；
+- General 相关内容。
+
+例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" pilot "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称"
+
+自动选择：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" pilot "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --auto-select
+
+但要注意当前代码的一个生命周期限制：
+
+【独立 pilot 不创建 upload_batch_members。】
+
+pilot 上传完成以后：
+- 会留下 COMPLETED 的作者 run；
+- 同一个 plan 再执行正式 run 时，这个作者会被识别为 `ALREADY_COMPLETED_IN_THIS_PLAN` 并自动跳过；
+- 单作者 verify 可以核对这个 pilot run；
+- 但单作者 verify 不会给它补出一个 `VERIFIED` batch member；
+- 当前 Cleanup 自动删除正式投稿目录又要求 `COMPLETED item + VERIFIED batch member`。
+
+因此：
+
+pilot
+→ 单作者 verify 成功
+
+并不能自然接成：
+
+verify-batch
+→ Cleanup 自动删除
+
+【如果这次真实上传最终还要进入当前自动 Cleanup 安全链，不建议使用独立 pilot；直接使用上面的单作者正式 run。】
+
+独立 pilot 更适合：
+- 开发调试；
+- 特殊兼容测试；
+- 你明确知道这次 pilot-only 源文件后续不会依赖当前自动 Cleanup 删除。
+
+
+### 独立 pilot 中断或失败怎么恢复
+
+pilot 没有 batch_id，所以不要套用：
+
+batch-status
+verify-batch
+resume-batch
+
+#### A. pilot 中断 / Timeout / ConnectionError / 远端结果不确定
+
+先找这个作者的 run_id：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" status --creator "UP主名称"
+
+再精确核对：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify --creator "UP主名称" --run-id 123
+
+如果输出：
+
+SAFE_TO_RESUME = YES
+
+而这个 run 没有 batch_link，当前 verify 会提示重新执行原 plan 对应的 pilot/run 命令。
+
+这时重新执行原 pilot，例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" pilot "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称"
+
+已完成步骤会按原 run 状态继续/跳过。
+
+#### B. pilot 明确 FAILED
+
+修复明确失败原因后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" pilot "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称" --retry-failed
+
+VERIFY_REQUIRED 不使用 `--retry-failed`，先 verify。
+
+
+## 【第六步（run：正式上传一个 batch）】
+
+run 会根据 plan 选择作者并建立新的持久 batch。
+
+历史作者继续使用 archive.db 已经固定的 target。
+如果新作者当前还只是 plan 中的路由提议，run 会在【任何 Telegram 写入之前】先把本次选中新作者的 UID → target 正式写入 archive.db，然后创建 batch 并开始上传。
+
+所以日常可以直接：
+
+scan
+→ inspect-plan
+→ run
+
+不要求先手工 prepare-plan。
+
+【当前默认作者顺序是 `size`，不是早期文档里的 folder。】
+
+
+### 1. run 常用命令
+
+a. 不指定数量时，默认处理 1 个尚未完成作者，并按总体积从小到大选择：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json"
+
+b. 上传 plan 中全部尚未完成作者：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --all
+
+c. 最多上传 3 个作者：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --limit-creators 3
+
+d. 指定一个作者：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称" --order selected
+
+e. 指定多个作者，并保持你写入的顺序：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主A" --creator "UP主B" --order selected
+
+f. 按正式目录顺序：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --all --order folder
+
+g. 按总体积从小到大【当前默认】：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --all --order size
+
+h. 从 TXT 作者名单读取：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creators-file "D:\Program files\Telethon\bili_archive\upload_creators.txt" --order selected
+
+
+### 2. 上传等待参数
+
+代码默认：
+
+--delay 2
+→ 每条视频完成后基础等待 2 秒。
+
+--document-delay 4
+→ 每个 ZIP 完成后基础等待 4 秒。
+
+过去本项目为了提高速度曾长期使用较短参数，例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" run "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --all --delay 0.5 --document-delay 1 --order folder
+
+如果近期同一账号在相似批次中长期没有明显 FloodWait，可以根据自己的历史实测继续使用较短等待。
+一旦 FloodWait 明显增多，优先恢复默认值或进一步增加等待，不要持续提高发送频率。
+
+网络稳定性主要影响 Timeout / ConnectionError / 断线，不能作为判断 Telegram 限流风险低不低的依据。
+
+Telethon 对低于配置阈值的 FloodWait 可以自动等待；较长的等待仍可能由 Archive 保留批次状态后交给恢复流程处理。
+
+
+### 3. run 开始前会显示什么
+
+程序先打印类似：
+
+本次新增/更新视频：N
+本次选中媒体总量：X GiB
+
+批次名单：
+01. UP主A｜视频 10｜ZIP 1｜...
+02. UP主B｜视频 20｜ZIP 2｜...
+
+同时会显示或记录：
+- 每个作者的 target；
+- 本轮作者顺序；
+- 视频/ZIP 数量；
+- 总体积。
+
+确认这些信息合理后输入：
+
+RUN
+
+才开始正式上传。
+
+
+### 4. run 过程中重点看什么
+
+每个作者会建立/复用一个 run_id。
+
+本轮还会建立 batch_id。
+
+建议把【batch_id】记下来，后面：
+
+batch-status
+resume-batch
+verify-batch
+
+都会使用它。
+
+一个 batch 可以同时包含 bili_001、bili_002 等不同 target 的作者。
+每个作者根据 archive.db 中已经固定的 target_id 上传，不根据当前 config 临时猜群。
+
+
+### 5. run 正常完成后是什么状态
+
+正常作者上传完成后：
+
+run = COMPLETED
+
+batch member = COMPLETED_UNVERIFIED
+
+整个 batch 如果所有作者都已经完成：
+
+batch = COMPLETED_UNVERIFIED
+
+这表示本地上传流程结束，但还没有完成远端核验。
+
+下一步：
+
+verify-batch
+
+
+## 【第七步（verify-batch：核验整个 batch）】
+
+这是日常批量上传完成后的标准核验命令。
+
+它会按每个 batch member 保存的 run_id 和 target_id，检查 Telegram 远端消息，再把通过的 batch member 写成 VERIFIED。
+
+全部成员 VERIFIED 后：
+
+batch = VERIFIED
+
+
+### 1. verify-batch 常用命令
+
+a. 核验指定 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify-batch --batch-id 3
+
+b. 核验最新 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify-batch --latest
+
+c. 只重新检查 FAILED / VERIFY_REQUIRED / RESUME_READY 成员：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify-batch --batch-id 3 --failed-only
+
+
+### 2. CLI 要先看批次总体结果
+
+核心字段：
+
+SAFE_TO_RESUME_BATCH = NOT_NEEDED / YES / NO
+
+含义：
+
+【NOT_NEEDED】
+当前 0.10.2 中，verify-batch 只有在【整批 batch member 已经全部 VERIFIED】时才输出这个值。
+
+所以：
+
+SAFE_TO_RESUME_BATCH = NOT_NEEDED
+→ 整批成员已经 VERIFIED
+→ 不再需要 resume-batch。
+
+但它只回答“还要不要继续上传”，不能单独替代删除判断。
+如果某个 VERIFIED run 内存在 SKIPPED，`SAFE_TO_DELETE_BATCH` 仍可能为 NO。
+
+【YES】
+远端核验没有发现歧义，但 batch 仍有 NOT_STARTED / RESUME_READY 等成员，可以沿原 batch 继续上传。
+
+下一步：
+
+resume-batch
+
+【NO】
+至少存在远端不确定、核验失败或其他问题。
+
+不要直接 resume 重发。
+先看前面具体是哪个 UP、哪个 run/item 出问题，再进入对应的异常处理分支。
+
+
+### 3. SAFE_TO_DELETE 不能和 SAFE_TO_RESUME 混在一起
+
+当整个 batch 完全 VERIFIED，并且没有 SKIPPED item 时，可能出现：
+
+SAFE_TO_DELETE_BATCH = YES
+
+如果存在 SKIPPED，可能出现：
+
+SAFE_TO_DELETE_UPLOADED_ITEMS = YES
+SAFE_TO_DELETE_SKIPPED_ITEMS = NO
+SAFE_TO_DELETE_BATCH = NO
+
+当前 Cleanup 自动删除正式投稿目录的安全边界是：
+
+【item = COMPLETED + 对应 batch member = VERIFIED】
+
+SKIPPED 不属于自动安全删除条件。
+
+所以不要沿用早期流程中“批次已经不需要 resume，因此 SKIPPED 也可以一起删”的旧做法。
+
+
+### 4. 单作者 verify 和 verify-batch 不要混用
+
+日常 batch 主流程使用 verify-batch。
+
+单作者 `verify` 主要用于：
+- 精确核对一个作者；
+- 检查某个历史 run；
+- 中断/异常时做诊断。
+
+检查作者最新 run：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify --creator "UP主名称"
+
+精确检查历史 run_id：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify --creator "UP主名称" --run-id 123
+
+注意：
+- `verify` 必须提供 `--creator`；
+- 不写 `--run-id` 时检查该作者最新 run；
+- `verify-batch` 对已经 VERIFIED 的成员会直接跳过；
+- 如果要重新检查很早以前已经 VERIFIED 的历史 run，先用 `status --creator` 找 run_id，再使用上面的精确 `verify --run-id`。
+
+单作者 verify 输出的 `SAFE_TO_DELETE_CREATOR = YES` 是这个 run 的远端核对结果。
+当前自动 Cleanup 仍以【batch member = VERIFIED】作为正式投稿目录的删除证据，因此日常上传后仍应完成 verify-batch。
+
+
+## 【第八步（General 作者导航）】
+
+run 完成后会 best-effort 更新涉及 target 的 General 作者索引。
+
+大多数正常批次不需要额外操作。
+
+以下情况建议检查：
+- 新作者第一次建立 topic；
+- 新 target 第一次使用；
+- CLI 提示 navigation DIRTY / PIN_PENDING / ERROR；
+- PIN_MESSAGE 遇到较长 FloodWait；
+- 作者改名后希望立即更新索引。
+
+
+### 1. 查看导航状态
+
+全部 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-status
+
+指定 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-status --key bili_002
+
+状态：
+
+CLEAN
+→ archive.db 记录的上一次导航同步已经完成，目前没有已知待同步变化。
+→ 这个命令不连接 Telegram，所以 CLEAN 不是对远端消息当前仍存在的实时核验。
+
+DIRTY
+→ 作者/topic/名称发生变化，需要同步。
+
+PIN_PENDING
+→ 导航内容基本完成，但置顶动作尚未完成，常见于 PIN FloodWait。
+
+ERROR
+→ 上次导航同步失败。
+
+
+### 2. 同步导航
+
+默认只处理 DIRTY / PIN_PENDING / ERROR：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-sync
+
+指定 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-sync --key bili_002
+
+强制重新检查全部 target：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-sync --all
+
+【导航失败不等于媒体上传失败】
+
+如果 run 已经 COMPLETED，只是 General 的 PIN 遇到 FloodWait，batch 不需要因此重传视频。
+稍后单独 navigation-sync 即可。
+
+
+## 【第九步（Cleanup：核验完成后再清理本地文件）】
+
+现在不建议根据旧 scan_result/source.json 手工批量删除正式视频。
+当前 Cleanup 会同时读取 Watcher/Archive 数据库，并重新检查删除条件。
+
+
+### 1. audit：只读生成清理 manifest
+
+作用：
+检查数据库健康、活动 plan、Watcher 缓存、Archive VERIFIED 状态、报告和临时文件，生成删除/封存候选清单。
+
+命令：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" audit
+
+CLI 会输出类似：
+
+Archive DB：OK
+Watcher DB：OK
+已核验本地投稿目录候选：N
+自动删除候选：N｜预计释放 X GiB
+自动封存候选：N
+人工复核：N
+JSON：...cleanup_manifest_*.json
+TXT：...cleanup_manifest_*.txt
+
+audit 不删除任何文件。
+
+
+### 2. inspect：查看 manifest
+
+把 audit 输出的 JSON 路径代入：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" inspect --manifest "D:\Program files\Telethon\bili_archive\reports\cleanup\cleanup_manifest_YYYYMMDD_HHMMSS.json"
+
+重点看：
+- verified_submission_dir；
+- 活跃 plan 是否全部 KEEP；
+- 有没有不符合预期的正式投稿目录进入自动删除；
+- manual_review 中是否有你仍需要的文件。
+
+
+### 3. clean：先预览，再正式执行
+
+只预览：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" clean --manifest "D:\Program files\Telethon\bili_archive\reports\cleanup\cleanup_manifest_YYYYMMDD_HHMMSS.json"
+
+正式移入回收站：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" clean --manifest "D:\Program files\Telethon\bili_archive\reports\cleanup\cleanup_manifest_YYYYMMDD_HHMMSS.json" --apply --trash
+
+正式永久删除：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_cleanup.py" clean --manifest "D:\Program files\Telethon\bili_archive\reports\cleanup\cleanup_manifest_YYYYMMDD_HHMMSS.json" --apply --permanent
+
+大量视频如果真正需要释放磁盘空间，通常使用 `--permanent`；
+`--trash` 只是移动到回收站，空间要等清空回收站后才真正释放。
+
+
+### 4. clean 不是直接照旧 manifest 硬删
+
+正式 `--apply` 前，Cleanup 会：
+- 再次检查 archive.db / watcher.db 完整性；
+- 重新审计当前项目状态；
+- 创建 Archive/Watcher SQLite checkpoint；
+- 重新确认每个路径仍满足删除条件。
+
+如果 audit 后项目状态发生变化，旧候选已经不再安全，会被：
+
+SKIPPED_REVALIDATION
+
+而不是继续删除。
+
+
+### 5. 当前正式投稿目录的删除边界
+
+自动删除必须满足：
+
+Archive item = COMPLETED
++
+对应 batch member = VERIFIED
+
+所以：
+
+COMPLETED_UNVERIFIED
+→ 不能自动删。
+
+VERIFY_REQUIRED / FAILED / RESUME_READY
+→ 不能自动删。
+
+SKIPPED
+→ 不能因为其他上传项已经 VERIFIED 就自动删这个跳过的视频。
+
+只有上传完成并通过批次核验的正式投稿，才进入 Cleanup 自动删除候选。
+
+
+## 【中断上传和恢复】
+
+如果 run 中按 Ctrl+C、网络断开、进程异常退出或出现 FloodWait，不要重新 scan 后直接建立新 batch。
+
+当前 batch 建立后已经固定：
+- 原 plan 和 plan fingerprint；
+- 作者名单；
+- 顺序；
+- 每个作者的 target_id。
+
+已经开始执行的成员还会固定自己的 run_id；
+尚未开始的成员可以暂时是：
+
+run_id=None
+member_status=NOT_STARTED
+
+等这个作者真正开始执行时，再建立/绑定 run_id。
+
+恢复必须沿原 batch。
+
+
+### A. 先用 batch-status 查看原 batch
+
+查看最新 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" batch-status --latest
+
+查看指定 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" batch-status --batch-id 3
+
+重点看：
+
+【batch 状态】
+
+PLANNED
+→ 已建立名单，但还没有全部开始。
+→ 通常可以继续原 batch。
+
+RUNNING
+→ 正在运行，或上次异常退出前仍记录为运行。
+→ 先确认没有实际 Archive 进程，再继续判断。
+
+INTERRUPTED
+→ 批次中断。
+→ 看各成员状态。
+
+VERIFY_REQUIRED
+→ 至少一个成员远端结果不确定。
+→ 先 verify-batch。
+
+COMPLETED_UNVERIFIED
+→ 上传完成，尚未远端核验。
+→ verify-batch。
+
+VERIFIED
+→ 整批已经核验。
+
+
+【成员状态】
+
+例如：
+
+01. UP主A｜VERIFIED｜run_id=20
+02. UP主B｜FAILED｜run_id=21
+03. UP主C｜NOT_STARTED｜run_id=None
+
+FAILED、VERIFY_REQUIRED、RESUME_READY、NOT_STARTED 的处理方式不同，不要全部当成“重新 run 一次”。
+
+
+### B. 远端结果不确定时先 verify-batch
+
+如果中断发生在：
+- TimeoutError；
+- ConnectionError；
+- Server closed；
+- Ctrl+C 正好打断发送；
+- Telegram RPC 返回结果不确定；
+
+不要直接重发。
+
+先：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify-batch --batch-id 3
+
+如果输出：
+
+SAFE_TO_RESUME_BATCH = YES
+
+说明核验没有发现远端歧义，而且仍有成员需要继续。
+
+再执行 resume-batch。
+
+
+### C. resume-batch：继续原来的同一个 batch
+
+作用：
+继续这个 batch 原计划中尚未完成的作者/item；不会新建 plan，也不会把后来新增视频加入旧 batch。
+
+恢复指定 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" resume-batch --batch-id 3
+
+恢复最新 batch：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" resume-batch --latest
+
+如果明确 FAILED 原因已经修复，需要允许重试：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" resume-batch --batch-id 3 --retry-failed
+
+过去本项目使用较短等待时，也可以：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" resume-batch --batch-id 3 --delay 0.5 --document-delay 1
+
+如果提示：
+
+该批次已完成上传但尚未核验；
+请运行 verify-batch，而不是 resume-batch。
+
+那么不要继续 resume，直接回【第七步 verify-batch】。
+
+
+### D. resume 完成后再次 verify-batch
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify-batch --batch-id 3
+
+直到 batch 真正 VERIFIED，或者 verify 报告指出需要进一步修复的问题。
+
+
+### E. 中断期间同一 UP 又下载了新视频
+
+旧 batch 不会自动吸收新视频。
+
+正确顺序：
+
+旧 batch
+→ batch-status
+→ verify / repair / resume
+→ verify-batch
+→ 旧 batch 结束
+→ 再 scan 当前正式目录
+→ 新视频进入新 plan
+→ 新 batch
+
+不要用新 scan 生成的 plan 替换旧 batch 的原 plan。
+
+
+## 【异常 item 修复】
+
+如果 verify-batch 输出：
+
+SAFE_TO_RESUME_BATCH = NO
+
+先看具体哪个作者、哪个 item 出问题，再选下面的处理方式。
+
+
+### 情况 1：远端标题/媒体和数据库状态不一致 → repair-item
+
+作用：
+检查【该作者最新 run】中的指定标题，并根据 Telegram 当前远端情况决定能否安全修复。
+
+当前 repair-item 不接受 `--run-id`。
+如果问题发生在很早以前的历史 run，不能把 repair-item 当作任意历史 run 的通用修复命令。
+
+先预览：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" repair-item --creator "UP主名称" --title "精确视频标题"
+
+可能出现：
+
+【远端完整】
+→ 可以 `--apply` 把本地 item 写回 COMPLETED。
+
+【标题存在、媒体为空】
+→ 可以 `--apply` 重置到 TITLE_SENT；
+→ resume 后重新发送媒体。
+
+【标题也不存在】
+→ 可以 `--apply` 重置到 PENDING；
+→ resume 后重新创建标题和媒体。
+
+【只有部分媒体】
+→ 不自动修复；
+→ 先人工把 Telegram 残留处理到明确“空”或“完整”状态，再重新检查。
+
+只有 CLI 明确允许时再：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" repair-item --creator "UP主名称" --title "精确视频标题" --apply
+
+处理成功后回：
+
+resume-batch
+→ verify-batch
+
+
+### 情况 2：这条视频决定不再上传 → skip-item
+
+作用：
+明确把原 batch 中一条无法继续处理的 item 标成 SKIPPED，让其他内容可以继续。
+
+先预览：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" skip-item --batch-id 3 --creator "UP主名称" --title "精确视频标题" --reason "无法取得有效视频"
+
+确认后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" skip-item --batch-id 3 --creator "UP主名称" --title "精确视频标题" --reason "无法取得有效视频" --apply
+
+前提：
+先确认 Telegram 远端没有残留有效媒体。
+如果远端还有部分媒体，先 repair/人工处理，不要直接 skip 后留下半条归档。
+
+skip 成功后：
+
+resume-batch
+→ verify-batch
+
+注意：
+SKIPPED 不属于 Cleanup 自动安全删除条件。
+
+
+### 情况 3：原主 MP4 损坏，已经重新下载正常视频 → replace-item-source
+
+作用：
+把新的正常主 MP4 接回【原 batch / 原 run / 原 item】，不修改原 plan 指纹，也不新建一个重复 batch。
+
+如果正常视频已经放回原 plan 对应路径，可以省略 `--file`：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" replace-item-source --batch-id 3 --creator "UP主名称" --title "精确视频标题" --reason "原 MP4 损坏，已重新下载正常版本"
+
+如果替代文件在其他位置：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" replace-item-source --batch-id 3 --creator "UP主名称" --title "精确视频标题" --file "F:\新建文件夹\b站视频\UP主\投稿\正常视频.mp4" --reason "原 MP4 损坏"
+
+确认后加：
+
+--apply
+
+例如：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" replace-item-source --batch-id 3 --creator "UP主名称" --title "精确视频标题" --file "F:\新建文件夹\b站视频\UP主\投稿\正常视频.mp4" --reason "原 MP4 损坏" --apply
+
+replace-item-source 只替换主 MP4，不替换 Cover/截图。
+
+替代 MP4 在原 run 中成功完成上传后，Archive 会把当前版本的主文件大小、mtime、SHA-256 更新成替代文件。
+之后再用 verify-batch 核对 Telegram 远端。
+
+处理成功后：
+
+resume-batch
+→ verify-batch
+
+
+### 情况 4：活动 batch 中源文件被删掉/覆盖
+
+旧 plan 会继续引用当时的路径、大小和 mtime。
+
+【从回收站还原原 MP4】
+如果路径、大小、mtime 都重新符合 plan，可以继续；
+mtime 发生变化时仍会按源文件变化阻断。
+
+【重新下载一个同名 MP4】
+同名不等于原文件。
+大小或 mtime 与 plan 不同都会阻断。
+
+确认新文件是正确替代版本时：
+使用 replace-item-source。
+
+【只有图片还在】
+当前代码可以把主视频缺失降级成 image-only。
+如果你不接受 Telegram 最终只有图片，应在恢复 batch 前补回/替换视频。
+
+
+## 【已经 VERIFIED 的历史消息后来被人工删除】
+
+这和活动 batch 的异常修复不是同一个场景。
+
+verify-batch 遇到已经 VERIFIED 的 batch member 会直接跳过，不会自动把几十个历史 batch 全部重新检查。
+
+如果你怀疑某个较早历史 run 被人工删除：
+
+### 1. 先找历史 run_id
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" status --creator "UP主名称"
+
+### 2. 精确重新核对该 run
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" verify --creator "UP主名称" --run-id 123
+
+如果远端内容确实缺失：
+- 当前 repair-item 只处理这个作者最新 run；
+- 它不能用 `--run-id` 指向任意旧历史 run；
+- 很早以前的 VERIFIED run 不能直接照搬活动 batch 的 repair-item 流程。
+
+这种情况需要根据实际历史消息和数据库关系人工处理，或者以后开发专门的历史 run 修复功能。
+
+另外：
+如果重新 scan 发现同标题视频内容已经变化，它可能形成正常 VERSION_UPDATE / v2/v3 新归档；
+这属于“新增一个更新版本”，不是向旧 VERIFIED media group 原地追加媒体。
+
+
+## 【FloodWait / PIN_PENDING / 网络异常】
+
+### 1. FloodWait
+
+Telegram 可能返回：
+
+FloodWaitError: N seconds
+
+短等待可以由 Telethon/Archive 自动处理。
+
+【正式 run / 持久 batch】
+
+长 FloodWait 时：
+- 当前 batch/run 状态会保留；
+- 不要为了“卡住”重新启动一个新 batch；
+- 进程结束后按 batch-status → verify-batch → resume-batch 处理。
+
+【独立 pilot】
+
+pilot 没有 batch_id，不走上面的 batch 链。
+进程结束后按：
+
+status --creator
+→ verify --creator --run-id N
+→ SAFE_TO_RESUME=YES 时重新执行原 pilot
+
+处理。
+
+
+### 2. PIN_MESSAGE FloodWait
+
+如果视频已经上传完成，只是 General 作者导航置顶失败：
+
+navigation-status 可能显示 PIN_PENDING。
+
+这时媒体 batch 不需要重传。
+
+稍后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" navigation-sync
+
+
+### 3. Timeout / ConnectionError / Server closed
+
+这类错误最重要的问题是：
+
+【客户端没收到成功 ≠ Telegram 一定没收到消息】
+
+所以不要直接 `--retry-failed` 重发一个远端结果不确定的 item。
+
+正式 batch：
+
+verify-batch
+→ 再决定 resume/repair。
+
+独立 pilot：
+
+status --creator
+→ verify --creator --run-id N
+→ SAFE_TO_RESUME=YES 时重新执行原 pilot。
+
+
+### 4. 明确 FAILED
+
+FAILED 表示脚本已经知道某一步明确失败。
+
+正式 batch 修复原因后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" resume-batch --batch-id 3 --retry-failed
+
+独立 pilot 修复原因后：
+
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_archive.py" pilot "D:\Program files\Telethon\bili_archive\plans\plan_YYYYMMDD_HHMMSS.json" --creator "UP主名称" --retry-failed
+
+`--retry-failed` 不适用于 VERIFY_REQUIRED。
+
+
+## 【作者改名 / 新作者 / target 容量异常】
+
+### 1. 同 UID 出现旧名和新名两个本地目录
+
+Archive scan 会报：
+
+LOCAL_DUPLICATE_CREATOR_UID
+
+不要在 Archive 中选一个目录硬传。
+
+先回 Watcher：
+
+sync-creators
+→ reconcile-creators
+→ reconcile-creators --apply
+
+再重新 Archive scan。
+
+
+### 2. B站作者改名，但 UID 没变
+
+Archive 仍然是同一个作者：
+- 原 target 不变；
+- 原 topic 不重建；
+- 当前名称可以更新；
+- 旧名称继续保存在 archive.db 名称历史；
+- General 作者索引在后续 navigation-sync 中更新。
+
+
+### 3. 新作者容量不足
+
+默认每个 target 容量 50。
+
+scan 如果发现本轮新作者超过所有 ACTIVE target 剩余容量，会整体阻断，不会先分一部分再留下另一部分。
+
+处理：
+
+Telegram 手工建新 Forum 群
+→ target-discover
+→ target-add --apply
+→ target-check
+→ 重新 scan
+
+
+## 【plan、temp、报告和数据库什么时候能清理】
+
+日常不建议手工一边上传一边清理 Archive 文件。
+
+
+### 可以由当前 Cleanup 自动处理/归档的典型内容
+
+在没有活动任务、并且经过 audit 判定后：
+- 已 VERIFIED 的正式投稿目录；
+- 旧 Watcher/Archive 日常报告；
+- 非活动 plan；
+- Archive temp；
+- media validation cache；
+- 旧数据库快照（按保留数量裁剪）；
+- 已封存/过期维护报告。
+
+
+### 活动 batch 期间不要清理
+
+- 当前 batch 引用的原 plan；
+- 当前正式源媒体；
+- 当前 temp 中仍可能使用的运行文件；
+- archive.db；
+- Telethon Session。
+
+
+### 长期保留
+
+- archive.db；
+- watcher.db；
+- config；
+- Session；
+- 当前脚本；
+- UP 根目录；
+- `新建文本文档.txt`；
+- Cleanup 认为仍不能安全删除的投稿。
+
+`.pilot.lock` 文件本身存在不代表 Archive 进程仍持有锁。
+当前真正的互斥依赖操作系统文件锁，通常不需要靠手工删除 `.pilot.lock` 解锁。
+
+
+## 【推荐的日常操作顺序】
+
+普通已有作者增量：
+
+1. Watcher 下载/整理完成
+2. Archive `scan`
+3. 看阻断错误、更新数量、ZIP 和 plan 路径
+4. `inspect-plan`
+5. `run`
+6. 记住 batch_id
+7. `verify-batch --batch-id N`
+8. 如果有问题：repair / skip / replace / resume
+9. 再次 `verify-batch`
+10. 新作者/导航异常时检查 `navigation-status`
+11. `bili_cleanup.py audit`
+12. `inspect`
+13. `clean --apply --permanent` 或 `--trash`
+
+
+新增作者：
+
+1. Watcher 已完成作者 init/download
+2. Archive `scan`
+3. 如果 target 容量不足：新增 Telegram Forum target 后重新 scan
+4. `inspect-plan`
+5. 第一次使用新群、希望先试一个作者时：优先用单作者正式 `run --creator ... --order selected`
+6. 核验这个试跑 batch：`verify-batch --batch-id N`
+7. 试跑正常后，用同一 plan `run` 剩余作者
+8. 对后续 batch 继续 `verify-batch`
+9. 检查新作者 General 导航
+10. Cleanup
+
+
+中断批次：
+
+1. `batch-status --batch-id N`
+2. 远端不确定：`verify-batch --batch-id N`
+3. SAFE_TO_RESUME_BATCH = YES：`resume-batch --batch-id N`
+4. 明确 FAILED 且原因已修：加 `--retry-failed`
+5. resume 完成后再次 `verify-batch`
+
+
+单条异常：
+
+远端/数据库不一致
+→ repair-item
+→ resume-batch
+→ verify-batch
+
+决定放弃
+→ skip-item
+→ resume-batch
+→ verify-batch
+
+主 MP4 损坏、已有正常替代文件
+→ replace-item-source
+→ resume-batch
+→ verify-batch
+
+
+## 【几个容易混淆的判断】
+
+【run COMPLETED】
+只表示本地上传阶段已经完成。
+不等于 batch VERIFIED。
+
+【verify --creator】
+核对单作者/单 run。
+不替代日常整批 verify-batch。
+
+【verify-batch VERIFIED】
+才会把 batch member 写成 VERIFIED，并在全部成员通过后把 batch 写成 VERIFIED。
+
+【SAFE_TO_RESUME_BATCH = NOT_NEEDED】
+当前 0.10.2 中表示整批 batch member 已经全部 VERIFIED，因此不再需要 resume-batch。
+是否能自动删除全部正式源仍要看删除安全字段；如果 run 内存在 SKIPPED，`SAFE_TO_DELETE_BATCH` 仍可能为 NO。
+
+【SKIPPED】
+表示明确放弃独立上传。
+不等于 COMPLETED，不属于 Cleanup 自动安全删除条件。
+
+【navigation CLEAN】
+表示 archive.db 记录上一次导航同步完成、没有已知待同步变化。
+navigation-status 不连接 Telegram，因此 CLEAN 不是远端实时核验。
+
+【新 scan / 新 plan】
+不会修改已经开始的旧 batch。
+旧 batch 中断时始终沿原 plan 恢复。

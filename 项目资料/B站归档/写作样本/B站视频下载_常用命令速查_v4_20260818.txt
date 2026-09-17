@@ -1,0 +1,462 @@
+﻿B站视频下载_常用命令速查
+=========================
+
+当前脚本：bili_watcher.py 0.3.8-access-refresh-optin
+项目目录：D:\Program files\Telethon\bili_archive
+Python：D:\Program files\Telethon\.venv\Scripts\python.exe
+
+【速查排列原则】
+
+本文件按实际运行顺序排列：
+
+check-config
+→ check-login / Cookie
+→ init-db（首次）
+→ sync / init / reconcile（作者变化时）
+→ scan
+→ download
+→ status
+→ FAILED / 媒体修复 / DownKyi
+→ 权限与人工终态
+→ 测试 / 帮助
+
+因此从上往下查找即可；同一命令的常用参数仍集中放在该命令第一次出现的位置。
+
+一、启动检查与首次建库
+------------------
+
+【check-config】—— 第一步
+
+a. 检查配置、路径、工具和 Cookie
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" check-config
+
+
+【check-login】—— 第二步
+
+a. 检查 B站 Cookie 登录状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" check-login
+
+
+【export-cookies】—— check-login 失败时再用
+
+正常登录时不需要每次执行。Cookie 失效或需要重新导出时使用。
+
+a. 按 watcher_config.json 中的浏览器设置导出 Cookie；允许覆盖原文件
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" export-cookies --yes
+
+b. 临时指定 Firefox
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" export-cookies --browser firefox --yes
+
+c. 临时指定 Edge
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" export-cookies --browser edge --yes
+
+d. 临时指定输出路径
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" export-cookies --output "D:\临时\bilibili_cookies.txt" --yes
+
+
+【init-db】—— 仅首次建库或需要验证数据库时
+
+a. 创建 / 验证 watcher.db
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-db
+
+二、新增 UP 与作者改名
+------------------
+
+【sync-creators】
+
+a. 同步本地新增 UP、UP 名称和目录变化
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" sync-creators
+
+
+【preview-creator】
+
+a. 查看新增 UP 最近 50 个投稿，便于选择 BVID 基线
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" preview-creator --creator "UP主名称" --limit 50
+
+b. 临时限制最多请求 3 页
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" preview-creator --creator "UP主名称" --limit 50 --max-pages 3
+
+
+【init-creator】
+
+a. 初始化新增 UP，默认纳入全部可见投稿
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称"
+
+b. 明确写出 --all
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --all
+
+c. 包含指定 BVID，并纳入它及之后更晚的投稿
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --from-bvid BVxxxxxxxxxx
+
+d. 不包含指定 BVID，只纳入它之后更晚的投稿
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" init-creator --creator "UP主名称" --after-bvid BVxxxxxxxxxx
+
+注意：已经正常运行的旧作者不要因为改名重新 init-creator。
+
+
+【list-uninitialized】
+
+a. 列出所有尚未完成 init-creator 的 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" list-uninitialized
+
+
+【reconcile-creators】
+
+a. 预览同 UID 的旧名 + 新名作者目录归并
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" reconcile-creators
+
+b. 正式归并作者目录并更新 watcher.db
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" reconcile-creators --apply
+
+三、scan → download → status（日常主流程）
+------------
+
+【scan】
+
+a. 扫描全部已初始化 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan
+
+b. 扫描全部 UP，并显示新增投稿标题【日常推荐】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --details
+
+c. 只扫描一个 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主名称"
+
+d. 扫描多个 UP，并显示新增投稿标题
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主A" --creator "UP主B" --details
+
+e. scan 后同时复查本轮作者的历史充电试看/访问受限投稿
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --refresh-access
+
+f. 不更新各 UP 的【历史上传记录.txt】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --no-history
+
+g. 临时限制每个 UP 最多扫描 5 页
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --max-pages 5
+
+h. 组合参数：指定 UP + 显示标题 + 复查充电权限
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --creator "UP主名称" --details --refresh-access
+
+
+【download】
+
+a. 下载所有 PENDING【日常推荐】
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending
+
+b. 不写 --pending 时，同样默认下载所有 PENDING
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download
+
+c. 跳过输入 DOWNLOAD 的确认
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --yes
+
+d. 只下载某次 scan 首次发现的任务，例如 scan ID 12
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --scan-id 12
+
+e. 只下载一个 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --bvid BVxxxxxxxxxx
+
+f. 一次指定多个 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --bvid BVxxxxxxxxxx --bvid BVyyyyyyyyyy
+
+g. 重试 FAILED 和 DownKyi 待补救任务
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --retry-failed
+
+h. 临时指定 1080p 画质上限
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --quality 1080p
+
+允许画质：best / 1080p / 720p / 480p / 360p
+
+i. 临时改为 3 个投稿并发
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --pending --workers 3
+
+
+【status】
+
+a. 查看全部 UP 状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status
+
+b. 查看一个 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status --creator "UP主名称"
+
+c. 查看一个 BVID 的投稿、权限和下载任务状态
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" status --bvid BVxxxxxxxxxx
+
+四、下载失败与媒体修复
+------------------
+
+【download --retry-failed】
+
+a. 重试 FAILED 和 MANUAL_FALLBACK_PENDING
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" download --retry-failed
+
+
+【audit-media】
+
+a. 检查全部正式视频
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media
+
+b. 只检查指定 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --creator "UP主名称"
+
+c. 只检查指定 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --bvid BVxxxxxxxxxx
+
+d. 指定 BVID，并增加开头/中间/结尾抽样解码
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" audit-media --bvid BVxxxxxxxxxx --deep
+
+
+【repair-media】
+
+a. 预览指定异常 BVID 的处理计划
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --bvid BVxxxxxxxxxx
+
+b. 正式隔离异常媒体并把任务重置为 PENDING
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --bvid BVxxxxxxxxxx --apply
+
+c. 只扫描/处理指定 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --creator "UP主名称"
+
+d. 预览全部异常项
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --all-invalid
+
+e. 正式处理全部异常项
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --all-invalid --apply
+
+f. 指定 BVID，并增加抽样解码检查
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" repair-media --bvid BVxxxxxxxxxx --deep
+
+五、DownKyi 人工补救与历史兼容
+-------------------------
+
+【import-downkyi】
+
+DownKyi Media：
+E:\Program_file\DownKyi-1.0.24-1.win-x64\Media
+
+a. 只读预览候选匹配
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" import-downkyi --media-dir "E:\Program_file\DownKyi-1.0.24-1.win-x64\Media"
+
+b. 确认匹配正确后正式导入
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" import-downkyi --media-dir "E:\Program_file\DownKyi-1.0.24-1.win-x64\Media" --apply
+
+
+【fix-import-names】
+
+用于修复旧版 DownKyi 导入后仍显示为 raw_001.mp4 等历史文件名。
+
+a. 预览全部可修复项
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" fix-import-names
+
+b. 预览指定 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" fix-import-names --creator "UP主名称"
+
+c. 预览指定 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" fix-import-names --bvid BVxxxxxxxxxx
+
+d. 正式修复指定 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" fix-import-names --bvid BVxxxxxxxxxx --apply
+
+六、权限变化与人工终态
+--------------
+
+【refresh-access】
+
+a. 复查全部历史充电试看 / 访问受限投稿
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access
+
+b. 只复查指定 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --creator "UP主名称"
+
+c. 一次复查多个 UP
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --creator "UP主A" --creator "UP主B"
+
+d. 只复查指定 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --bvid BVxxxxxxxxxx
+
+e. 一次复查多个 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" refresh-access --bvid BVxxxxxxxxxx --bvid BVyyyyyyyyyy
+
+
+【skip-download】
+
+a. 只读预览手动跳过
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" skip-download --bvid BVxxxxxxxxxx --reason "原因"
+
+b. 正式标记为 SKIPPED
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" skip-download --bvid BVxxxxxxxxxx --reason "原因" --apply
+
+c. 一次跳过多个 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" skip-download --bvid BVxxxxxxxxxx --bvid BVyyyyyyyyyy --reason "原因" --apply
+
+
+【unskip-download】
+
+a. 只读预览恢复 SKIPPED
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unskip-download --bvid BVxxxxxxxxxx
+
+b. 正式恢复为 PENDING
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unskip-download --bvid BVxxxxxxxxxx --apply
+
+
+【mark-source-unavailable】
+
+a. 只读预览来源失效标记
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" mark-source-unavailable --bvid BVxxxxxxxxxx --reason "原投稿已删除"
+
+b. 正式确认原投稿已删除 / 来源失效
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" mark-source-unavailable --bvid BVxxxxxxxxxx --reason "原投稿已删除" --apply
+
+c. 一次标记多个 BVID
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" mark-source-unavailable --bvid BVxxxxxxxxxx --bvid BVyyyyyyyyyy --reason "原投稿已删除" --apply
+
+
+【unmark-source-unavailable】
+
+a. 只读预览取消来源失效
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unmark-source-unavailable --bvid BVxxxxxxxxxx
+
+b. 正式取消来源失效；未完成任务恢复为 PENDING
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" unmark-source-unavailable --bvid BVxxxxxxxxxx --apply
+
+七、测试、帮助与特殊启动参数
+------------------------
+
+【notify-test】
+
+a. 测试成功提醒
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" notify-test --kind success
+
+b. 测试失败提醒
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" notify-test --kind error
+
+c. 测试警告提醒
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" notify-test --kind warning
+
+
+【版本 / 帮助】
+
+a. 查看 Watcher 版本
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --version
+
+b. 查看全部命令帮助
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --help
+
+c. 查看某个命令的参数，例如 scan
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" scan --help
+
+
+【全局参数】
+
+全局参数写在子命令前面。
+
+a. 临时指定 watcher_config.json
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --config "D:\Program files\Telethon\bili_archive\config\watcher_config.json" status
+
+也可以简写：
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" -c "D:\Program files\Telethon\bili_archive\config\watcher_config.json" status
+
+b. 临时指定项目根目录
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --project-root "D:\Program files\Telethon\bili_archive" status
+
+c. 找不到配置时直接报错，不进入交互查找
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --no-input status
+
+d. 临时关闭本次任务的完成 / 失败 / 中断提醒
+"D:\Program files\Telethon\.venv\Scripts\python.exe" "D:\Program files\Telethon\bili_archive\scripts\bili_watcher.py" --no-exit-notify scan --details
+
+八、状态快速对应命令
+----------------
+
+PENDING
+→ download --pending
+
+FAILED
+→ download --retry-failed
+
+MANUAL_FALLBACK_PENDING
+→ download --retry-failed
+→ 仍失败：DownKyi + import-downkyi
+
+ACCESS_RESTRICTED
+→ refresh-access
+
+SKIPPED
+→ unskip-download --bvid BVxxxxxxxxxx --apply
+
+SOURCE_UNAVAILABLE
+→ unmark-source-unavailable --bvid BVxxxxxxxxxx --apply
+
+STAGED / IMPORTED_DOWNKYI，但正式视频异常
+→ audit-media
+→ repair-media --bvid BVxxxxxxxxxx --apply
+→ download --pending
+
+九、完整运行顺序
+------------
+
+【项目第一次建立 Watcher】
+
+1. check-config
+2. check-login
+3. 登录失败时重新获取 Cookie / export-cookies
+4. init-db
+5. 确认作者初始化状态
+6. scan --details
+7. download --pending
+8. status
+
+
+【普通已有 UP 的日常更新】
+
+1. check-config
+2. check-login
+3. scan --details
+4. download --pending
+5. status
+6. 有 FAILED / 权限 / 媒体异常时进入对应异常命令
+7. bili_archive.py scan
+
+如果配置和 Cookie 长期稳定，实际日常运行时可以直接从 scan 开始；这里仍按完整检查顺序排列，方便很久以后重新启动项目时照着执行。
+
+
+【新增 UP】
+
+1. check-config
+2. check-login
+3. 建立作者文件夹 + 新建文本文档.txt
+4. sync-creators
+5. list-uninitialized（需要确认还有哪些作者未初始化时）
+6. preview-creator（需要查看投稿、选择 BVID 基线时）
+7. init-creator
+8. scan --details
+9. download --pending
+10. status
+
+
+【UP 改名】
+
+1. sync-creators
+2. 出现疑似同 UID 新旧目录时：reconcile-creators
+3. 确认预览正确：reconcile-creators --apply
+4. 不要重新 init-creator
+5. 继续正常 scan → download → status
+
+
+【下载失败】
+
+1. status / status --bvid
+2. download --retry-failed
+3. 仍失败：查看日志
+4. 可以人工取得视频：DownKyi → import-downkyi
+5. 不再下载：skip-download
+6. 已确认原投稿删除：mark-source-unavailable
+
+
+【已经 STAGED / IMPORTED_DOWNKYI，但正式视频异常】
+
+1. audit-media
+2. repair-media --bvid BVxxxxxxxxxx
+3. repair-media --bvid BVxxxxxxxxxx --apply
+4. download --pending
+5. status / audit-media 再确认
+
